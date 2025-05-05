@@ -22,9 +22,10 @@ Este repositório traz um bot de WhatsApp escrito em Go, usando [WhatsMeow](http
 ## ⚙️ Instalação e setup
 
 1. Clone este repositório e acesse a pasta:
-   ```bash
-   git clone https://github.com/atcasanova/whatsappBot.git
-   cd whatsappBot```
+```bash
+git clone https://github.com/atcasanova/whatsappBot.git
+cd whatsappBot
+```
 
 2. (Opcional) Gere e valide seu go.mod e go.sum antes do Docker:
 

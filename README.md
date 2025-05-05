@@ -64,13 +64,13 @@ docker-compose up --build -d
 
 ## 💬 Comandos suportados
 
-| Gatilho          | Onde                     | Exemplo                                  | O que faz                                                           |
-|------------------|--------------------------|------------------------------------------|---------------------------------------------------------------------|
-| `!model <nome>`  | Sua conversa privada     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container               |
-| `!ler`           | Sua conversa privada     | `!ler`                                   | Transcreve o último áudio citado usando Whisper                    |
-| `!resumo`        | Grupos autorizados       | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo            |
-| `!chatgpt <txt>` | Grupos ou sua conversa   | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada ao ChatGPT e devolve a resposta    |
-| `!img <prompt>`  | Grupos ou sua conversa   | `!img gato astronauta, estilo cartoon`    | Gera e envia uma imagem via DALL·E 3 (Standard) diretamente no chat |
+| Gatilho          | Onde                           | Exemplo                                  | O que faz                                                           |
+|------------------|--------------------------------|------------------------------------------|---------------------------------------------------------------------|
+| `!model <nome>`  | Sua conversa consigo mesmo     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container                |
+| `!ler`           | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
+| `!resumo`        | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
+| `!chatgpt <txt>` | Qualquer conversa              | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada ao ChatGPT e devolve a resposta     |
+| `!img <prompt>`  | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via DALL·E 3 (Standard) diretamente no chat |
 
 ---
 
@@ -79,6 +79,7 @@ docker-compose up --build -d
 - **Nível de log**: ajuste em `main.go` na criação do client:
   ```go
   clientLog := waLog.Stdout("Client", "DEBUG", true)
+  ```
 
 ## Estrutura
 ```go

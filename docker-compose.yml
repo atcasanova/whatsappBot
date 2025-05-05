@@ -1,0 +1,34 @@
+# trecho docker-compose.yml
+version: "3.5"
+services:
+  bot:
+    build: .
+    image: whatsapp-go-bot
+    restart: unless-stopped
+    environment:
+       - OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxx
+       - PATH_MP3=/mp3
+       - PATH_SESSION=/session
+       - USER_PHONE=551199999999
+       - GROUPS=551199999999-11111118@g.us,5511999999999-222222222@g.us
+       - PROMPT="Resuma as seguintes mensagens de forma clara, destacando os participantes da conversa e o que cada um disse. Destaque momentos interessantes, e não hesite em apontar quando alguém deixou uma pergunta sem resposta. O resumo deve ser curto o suficiente para ser lido em até um minuto:"
+       - CHATGPT_PROMPT=""
+       - MODEL=gpt-4.1-nano
+    volumes:
+       - sessiongo:/session
+       - mp3go:/mp3
+
+volumes:
+  sessiongo:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/whatsappBot/session
+      o: bind
+  mp3go:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/whatsappBot/mp3
+      o: bind
+

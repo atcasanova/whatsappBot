@@ -28,6 +28,7 @@ import (
     "google.golang.org/protobuf/proto"
 )
 
+const summaryMarker = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
 // Msg representa uma mensagem armazenada, possivelmente com quote
 type Msg struct {
     From       string
@@ -149,12 +150,14 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
     // Armazena histórico de grupos
     if _, ok := allowedGroups[chatBare]; ok {
         var qf, qb string
-        if ext := v.Message.GetExtendedTextMessage(); ext != nil {
-            ctx := ext.GetContextInfo()
-            if ctx != nil && ctx.GetQuotedMessage() != nil {
-                qb = ctx.GetQuotedMessage().GetConversation()
-                qf = bareJID(ctx.GetParticipant())
-            }
+        if !strings.HasPrefix(body, "!resumo") && !strings.Contains(body, summaryMarker) {
+          if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+              ctx := ext.GetContextInfo()
+              if ctx != nil && ctx.GetQuotedMessage() != nil {
+                  qb = ctx.GetQuotedMessage().GetConversation()
+                  qf = bareJID(ctx.GetParticipant())
+              }
+          }
         }
         messageHistory[chatBare] = append(messageHistory[chatBare], Msg{
             From:       fromName,
@@ -304,7 +307,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
         if sb.Len() > 0 {
             req := go_openai.ChatCompletionRequest{Model: model, Messages: []go_openai.ChatCompletionMessage{{Role: go_openai.ChatMessageRoleUser, Content: promptSummary + "\n\n" + sb.String()}}}
             if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
-                sendText(cli, chatBare, "📋 Resumo:\n"+resp.Choices[0].Message.Content)
+              sendText(cli, chatBare, summaryMarker+" Resumo:\n"+resp.Choices[0].Message.Content)
             }
         }
         return

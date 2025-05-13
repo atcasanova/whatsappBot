@@ -64,13 +64,17 @@ docker-compose up --build -d
 
 ## 💬 Comandos suportados
 
-| Gatilho          | Onde                           | Exemplo                                  | O que faz                                                           |
-|------------------|--------------------------------|------------------------------------------|---------------------------------------------------------------------|
-| `!model <nome>`  | Sua conversa consigo mesmo     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container                |
-| `!ler`           | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
-| `!resumo`        | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
-| `!chatgpt <txt>` | Qualquer conversa              | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada ao ChatGPT e devolve a resposta     |
-| `!img <prompt>`  | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via DALL·E 3 (Standard) diretamente no chat |
+| Gatilho                     | Onde                           | Exemplo                                  | O que faz                                                           |
+|-----------------------------|--------------------------------|------------------------------------------|---------------------------------------------------------------------|
+| `!model`                    | Sua conversa consigo mesmo     | `!model`                                 | Mostra o modelo atual usado pelo bot na API OpenAI                  |
+| `!model <nome>`             | Sua conversa consigo mesmo     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container                |
+| `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
+| `!resumo`                   | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
+| `!grupos`                   | Sua conversa consigo mesmo     | `!grupos`                                | Mostra os grupos monitorados para !resumo                           |
+| `!grupos add <id do grupo>` | Sua conversa consigo mesmo     | `!grupos add 551199999999-14700@g.us`    | Adiciona grupos monitorados para !resumo                            |
+| `!grupos del <id do grupo>` | Sua conversa consigo mesmo     | `!grupos del 551199999999-14700@g.us`    | Remove grupos monitorados para !resumo                              |
+| `!chatgpt <txt>`            | Qualquer conversa              | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada ao ChatGPT e devolve a resposta     |
+| `!img <prompt>`             | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via DALL·E 3 (Standard) diretamente no chat |
 
 ---
 

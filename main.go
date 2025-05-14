@@ -137,6 +137,8 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
     }
     senderBare := bareJID(v.Info.Sender.String())
     chatBare := bareJID(v.Info.Chat.String())
+    senderJID := senderBare
+
     fromName := v.Info.PushName
     if fromName == "" {
         fromName = senderBare
@@ -167,8 +169,27 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
             QuotedBody: qb,
         })
     }
+
+    // Download de áudios (voz) automaticamente :contentReference[oaicite:1]{index=1}
+   if aud := v.Message.GetAudioMessage(); aud != nil {
+       data, err := cli.Download(aud)
+       if err == nil {
+           // tenta descobrir extensão; se não achar, cai em .ogg
+           exts, _ := mime.ExtensionsByType(aud.GetMimetype())
+           var ext string
+           if len(exts) > 0 {
+               ext = exts[0]
+           } else {
+               ext = ".ogg"
+           }
+           fn := path.Join(pathMp3, v.Info.ID+ext)
+           _ = os.WriteFile(fn, data, 0644)
+       }
+   }
+
+
     // !img
-    if (allowedGroups[chatBare] || chatBare == userJID) && strings.HasPrefix(body, "!img ") {
+    if senderJID == userJID && strings.HasPrefix(body, "!img ") {
         prompt := strings.TrimSpace(body[5:])
         log.Printf("🖼️ Gerando imagem para: %q", prompt)
         imgResp, err := openaiClient.CreateImage(
@@ -262,7 +283,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
         return
     }
     // !ler
-    if chatBare == userJID && body == "!ler" {
+    if senderJID == userJID && body == "!ler" {
         log.Println("✅ Disparou !ler")
         if ext := v.Message.GetExtendedTextMessage(); ext != nil {
             ctx := ext.GetContextInfo()
@@ -313,7 +334,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
         return
     }
     // !chatgpt
-    if (allowedGroups[chatBare] || chatBare == userJID) && strings.HasPrefix(body, "!chatgpt") {
+    if senderJID == userJID && strings.HasPrefix(body, "!chatgpt") {
         log.Println("✅ Disparou !chatgpt")
         ext := v.Message.GetExtendedTextMessage()
         userMsg := strings.TrimSpace(body[len("!chatgpt"):])

@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -29,12 +28,13 @@ import (
 )
 
 const summaryMarker = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
+
 // Msg representa uma mensagem armazenada, possivelmente com quote
 type Msg struct {
     From       string
     Body       string
     Timestamp  time.Time
-    QuotedFrom string // bare JID de quem foi citado
+    QuotedFrom string // nome + bare JID de quem foi citado
     QuotedBody string // texto citado
 }
 
@@ -48,9 +48,24 @@ var (
     allowedGroups  map[string]bool
     messageHistory = make(map[string][]Msg)
     currentDay     = time.Now().Day()
+    contactNames   = make(map[string]string)
 )
 
-// bareJID remove o sufixo :agent de um full JID
+// helpers de contexto
+type void struct{}
+
+func isFromMe(sender string) bool {
+    return sender == userJID
+}
+
+func isPrivateChat(chat string) bool {
+    return chat == userJID
+}
+
+func isAuthorizedGroup(chat string) bool {
+    return allowedGroups[chat]
+}
+
 func bareJID(full string) string {
     parts := strings.SplitN(full, "@", 2)
     local := strings.SplitN(parts[0], ":", 2)[0]
@@ -67,13 +82,14 @@ func mustEnv(key, fallback string) string {
 func init() {
     if tz := os.Getenv("TZ"); tz != "" {
         if loc, err := time.LoadLocation(tz); err != nil {
-            log.Printf("⚠️  TZ inválido %q: %v", tz, err)
+            log.Printf("⚠️ TZ inválido %%q: %%v", tz, err)
         } else {
             time.Local = loc
             log.Printf("⏰ timezone setado para %s", loc)
         }
     }
     _ = godotenv.Load()
+
     openaiClient = go_openai.NewClient(os.Getenv("OPENAI_API_KEY"))
     pathMp3 = mustEnv("PATH_MP3", ".")
     sessionPath := mustEnv("PATH_SESSION", "./")
@@ -82,15 +98,18 @@ func init() {
         log.Fatal("USER_PHONE não definido")
     }
     userJID = userPhone + "@s.whatsapp.net"
+
     model = mustEnv("MODEL", "gpt-4o-mini")
     promptSummary = mustEnv("PROMPT", "Faça um resumo das seguintes mensagens...")
     promptChatGPT = mustEnv("CHATGPT_PROMPT", "Responda ao questionamento a seguir...")
+
     allowedGroups = make(map[string]bool)
     for _, g := range strings.Split(mustEnv("GROUPS", ""), ",") {
         if g != "" {
             allowedGroups[g] = true
         }
     }
+
     dbLog := waLog.Stdout("DB", "ERROR", true)
     dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", sessionPath)
     sqlContainer, err := sqlstore.New("sqlite3", dsn, dbLog)
@@ -124,6 +143,7 @@ func init() {
             handleMessage(client, v)
         }
     })
+
     c := make(chan os.Signal, 1)
     signal.Notify(c, os.Interrupt, syscall.SIGTERM)
     <-c
@@ -131,185 +151,155 @@ func init() {
 }
 
 func handleMessage(cli *whatsmeow.Client, v *events.Message) {
+    // 1) extrai texto
     body := v.Message.GetConversation()
     if ext := v.Message.GetExtendedTextMessage(); ext != nil {
         body = ext.GetText()
     }
+    // JIDs
     senderBare := bareJID(v.Info.Sender.String())
     chatBare := bareJID(v.Info.Chat.String())
     senderJID := senderBare
 
+    // atualiza cache de nomes
     fromName := v.Info.PushName
     if fromName == "" {
         fromName = senderBare
     }
+    contactNames[senderBare] = fromName
+
     log.Printf("📥 DEBUG sender=%s chat=%s body=%q", senderBare, chatBare, body)
-    // Reset diário
+
+    // reset diário
     if time.Now().Day() != currentDay {
         messageHistory = make(map[string][]Msg)
         currentDay = time.Now().Day()
     }
-    // Armazena histórico de grupos
-    if _, ok := allowedGroups[chatBare]; ok {
-        var qf, qb string
-        if !strings.HasPrefix(body, "!resumo") && !strings.Contains(body, summaryMarker) {
-          if ext := v.Message.GetExtendedTextMessage(); ext != nil {
-              ctx := ext.GetContextInfo()
-              if ctx != nil && ctx.GetQuotedMessage() != nil {
-                  qb = ctx.GetQuotedMessage().GetConversation()
-                  qf = bareJID(ctx.GetParticipant())
+
+    // ==== comandos GLOBAIS (qualquer chat) ====
+    if isFromMe(senderJID) {
+        // !chatgpt
+        if strings.HasPrefix(body, "!chatgpt") {
+          log.Println("✅ Disparou !chatgpt")
+          ext := v.Message.GetExtendedTextMessage()
+          userMsg := strings.TrimSpace(body[len("!chatgpt"):])
+          var quotedText string
+          if ext != nil {
+              if ctx := ext.GetContextInfo(); ctx != nil {
+                  if qm := ctx.GetQuotedMessage(); qm != nil {
+                      quotedText = qm.GetConversation()
+                      if quotedText == "" && qm.GetExtendedTextMessage() != nil {
+                          quotedText = qm.GetExtendedTextMessage().GetText()
+                      }
+                  }
               }
           }
+          prompt := userMsg
+          if quotedText != "" {
+              prompt = fmt.Sprintf("%s\n\nMensagem citada: %s", userMsg, quotedText)
+          }
+          if prompt != "" {
+              req := go_openai.ChatCompletionRequest{
+                  Model: model,
+                  Messages: []go_openai.ChatCompletionMessage{{
+                      Role:    go_openai.ChatMessageRoleUser,
+                      Content: promptChatGPT + "\n\n" + prompt,
+                  }},
+              }
+              if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
+                  sendText(cli, chatBare, resp.Choices[0].Message.Content)
+              }
+          }
+          return
+
         }
-        messageHistory[chatBare] = append(messageHistory[chatBare], Msg{
-            From:       fromName,
-            Body:       body,
-            Timestamp:  v.Info.Timestamp,
-            QuotedFrom: qf,
-            QuotedBody: qb,
-        })
+          // !img
+        if strings.HasPrefix(body, "!img ") {
+          prompt := strings.TrimSpace(body[len("!img "):])
+          log.Printf("🖼️ Gerando imagem para: %q", prompt)
+          respImg, err := openaiClient.CreateImage(
+              context.Background(),
+              go_openai.ImageRequest{
+                  Prompt:  prompt,
+                  N:       1,
+                  Size:    go_openai.CreateImageSize1024x1024,
+                  Model:   go_openai.CreateImageModelDallE3,
+                  Quality: go_openai.CreateImageQualityStandard,
+              },
+          )
+          if err != nil {
+              sendText(cli, chatBare, "❌ Erro ao gerar imagem: "+err.Error())
+              return
+          }
+          url := respImg.Data[0].URL
+          httpResp, err := http.Get(url)
+          if err != nil {
+              sendText(cli, chatBare, "❌ Falha ao baixar imagem: "+err.Error())
+              return
+          }
+          defer httpResp.Body.Close()
+          imgBytes, err := io.ReadAll(httpResp.Body)
+          if err != nil {
+              sendText(cli, chatBare, "❌ Não consegui ler a imagem: "+err.Error())
+              return
+          }
+          up, err := cli.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
+          if err != nil {
+              sendText(cli, chatBare, "❌ Erro no upload da imagem: "+err.Error())
+              return
+          }
+          jid, err := types.ParseJID(chatBare)
+          if err != nil {
+              log.Printf("⚠️ JID inválido: %v", err)
+              return
+          }
+          imageMsg := &waProto.ImageMessage{
+              Caption:       proto.String(prompt),
+              Mimetype:      proto.String(httpResp.Header.Get("Content-Type")),
+              URL:           proto.String(up.URL),
+              DirectPath:    proto.String(up.DirectPath),
+              MediaKey:      up.MediaKey,
+              FileEncSHA256: up.FileEncSHA256,
+              FileSHA256:    up.FileSHA256,
+              FileLength:    proto.Uint64(up.FileLength),
+          }
+          if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imageMsg}); err != nil {
+              log.Printf("❌ falha ao enviar imagem: %v", err)
+          }
+          return
+        }
+        // !ler
+        if body == "!ler" {
+          log.Println("✅ Disparou !ler")
+          if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+              if ctx := ext.GetContextInfo(); ctx != nil {
+                  if qm := ctx.GetQuotedMessage(); qm != nil && qm.GetAudioMessage() != nil {
+                      aud := qm.GetAudioMessage()
+                      exts, _ := mime.ExtensionsByType(aud.GetMimetype())
+                      ext := ".ogg"
+                      if len(exts) > 0 {
+                          ext = exts[0]
+                      }
+                      orig := ctx.GetStanzaId()
+                      filePath := path.Join(pathMp3, orig+ext)
+                      tr, err := openaiClient.CreateTranscription(
+                          context.Background(),
+                          go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
+                      )
+                      if err != nil {
+                          sendText(cli, chatBare, "❌ Erro na transcrição: "+err.Error())
+                      } else {
+                          sendText(cli, chatBare, "🗣️ "+tr.Text)
+                      }
+                  }
+              }
+          }
+          return
+        }
     }
 
-    // Download de áudios (voz) automaticamente :contentReference[oaicite:1]{index=1}
-   if aud := v.Message.GetAudioMessage(); aud != nil {
-       data, err := cli.Download(aud)
-       if err == nil {
-           // tenta descobrir extensão; se não achar, cai em .ogg
-           exts, _ := mime.ExtensionsByType(aud.GetMimetype())
-           var ext string
-           if len(exts) > 0 {
-               ext = exts[0]
-           } else {
-               ext = ".ogg"
-           }
-           fn := path.Join(pathMp3, v.Info.ID+ext)
-           _ = os.WriteFile(fn, data, 0644)
-       }
-   }
-
-
-    // !img
-    if senderJID == userJID && strings.HasPrefix(body, "!img ") {
-        prompt := strings.TrimSpace(body[5:])
-        log.Printf("🖼️ Gerando imagem para: %q", prompt)
-        imgResp, err := openaiClient.CreateImage(
-            context.Background(),
-            go_openai.ImageRequest{
-                Prompt:  prompt,
-                N:       1,
-                Size:    go_openai.CreateImageSize1024x1024,
-                Model:   go_openai.CreateImageModelDallE3,
-                Quality: go_openai.CreateImageQualityStandard,
-            },
-        )
-        if err != nil {
-            sendText(cli, chatBare, "❌ Erro ao gerar imagem: "+err.Error())
-            return
-        }
-        url := imgResp.Data[0].URL
-        httpResp, err := http.Get(url)
-        if err != nil {
-            sendText(cli, chatBare, "❌ Falha ao baixar imagem: "+err.Error())
-            return
-        }
-        defer httpResp.Body.Close()
-        imgBytes, err := io.ReadAll(httpResp.Body)
-        if err != nil {
-            sendText(cli, chatBare, "❌ Não consegui ler a imagem: "+err.Error())
-            return
-        }
-        uploadResp, err := cli.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
-        if err != nil {
-            sendText(cli, chatBare, "❌ Erro no upload da imagem: "+err.Error())
-            return
-        }
-        jid, err := types.ParseJID(chatBare)
-        if err != nil {
-            log.Printf("⚠️ JID inválido para imagem: %v", err)
-            return
-        }
-        imageMsg := &waProto.ImageMessage{
-            Caption:       proto.String(prompt),
-            Mimetype:      proto.String(httpResp.Header.Get("Content-Type")),
-            URL:           proto.String(uploadResp.URL),
-            DirectPath:    proto.String(uploadResp.DirectPath),
-            MediaKey:      uploadResp.MediaKey,
-            FileEncSHA256: uploadResp.FileEncSHA256,
-            FileSHA256:    uploadResp.FileSHA256,
-            FileLength:    proto.Uint64(uploadResp.FileLength),
-        }
-        if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imageMsg}); err != nil {
-            log.Printf("❌ falha ao enviar imagem: %v", err)
-        }
-        return
-    }
-    // !grupos
-    if chatBare == userJID && strings.HasPrefix(body, "!grupos") {
-        parts := strings.Fields(body)
-        switch {
-        case len(parts) == 1:
-            // lista grupos
-            var list []string
-            for g := range allowedGroups {
-                list = append(list, g)
-            }
-            if len(list) == 0 {
-                sendText(cli, chatBare, "Nenhum grupo autorizado.")
-            } else {
-                sendText(cli, chatBare, "Grupos autorizados: "+strings.Join(list, ", "))
-            }
-        case len(parts) == 3 && parts[1] == "add":
-            gid := parts[2]
-            allowedGroups[gid] = true
-            sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s adicionado.", gid))
-        case len(parts) == 3 && parts[1] == "del":
-            gid := parts[2]
-            delete(allowedGroups, gid)
-            sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s removido.", gid))
-        default:
-            sendText(cli, chatBare, "Uso: !grupos [add|del] <chatJID>")
-        }
-        return
-    }
-    // !model
-    if chatBare == userJID && strings.HasPrefix(body, "!model") {
-        if body == "!model" {
-            sendText(cli, chatBare, fmt.Sprintf("Modelo atual: %s", model))
-        } else if strings.HasPrefix(body, "!model ") {
-            newModel := strings.TrimSpace(body[7:])
-            model = newModel
-            sendText(cli, chatBare, fmt.Sprintf("✅ Modelo alterado para %s", model))
-        }
-        return
-    }
-    // !ler
-    if senderJID == userJID && body == "!ler" {
-        log.Println("✅ Disparou !ler")
-        if ext := v.Message.GetExtendedTextMessage(); ext != nil {
-            ctx := ext.GetContextInfo()
-            if qm := ctx.GetQuotedMessage(); qm != nil && qm.GetAudioMessage() != nil {
-                aud := qm.GetAudioMessage()
-                exts, _ := mime.ExtensionsByType(aud.GetMimetype())
-                var ext string
-                if len(exts) > 0 {
-                    ext = exts[0]
-                } else {
-                    ext = ".ogg"
-                }
-                origID := ctx.GetStanzaId()
-                filePath := path.Join(pathMp3, origID+ext)
-                resp, err := openaiClient.CreateTranscription(context.Background(), go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath})
-                if err != nil {
-                    sendText(cli, chatBare, "❌ Erro na transcrição: "+err.Error())
-                    return
-                }
-                sendText(cli, chatBare, "🗣️ "+resp.Text)
-            }
-        }
-        return
-    }
-    // !resumo
-    if allowedGroups[chatBare] && body == "!resumo" {
+    // ==== comando !resumo (antes de gravar) ====
+    if isAuthorizedGroup(chatBare) && body == "!resumo" {
         log.Println("✅ Disparou !resumo")
         hoje := time.Now().Truncate(24 * time.Hour)
         msgs := messageHistory[chatBare]
@@ -326,38 +316,109 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
             }
         }
         if sb.Len() > 0 {
-            req := go_openai.ChatCompletionRequest{Model: model, Messages: []go_openai.ChatCompletionMessage{{Role: go_openai.ChatMessageRoleUser, Content: promptSummary + "\n\n" + sb.String()}}}
+            req := go_openai.ChatCompletionRequest{
+                Model: model,
+                Messages: []go_openai.ChatCompletionMessage{{
+                    Role:    go_openai.ChatMessageRoleUser,
+                    Content: promptSummary + "\n\n" + sb.String(),
+                }},
+            }
             if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
-              sendText(cli, chatBare, summaryMarker+" Resumo:\n"+resp.Choices[0].Message.Content)
+                sendText(cli, chatBare, summaryMarker+" Resumo:\n"+resp.Choices[0].Message.Content)
             }
         }
         return
     }
-    // !chatgpt
-    if senderJID == userJID && strings.HasPrefix(body, "!chatgpt") {
-        log.Println("✅ Disparou !chatgpt")
-        ext := v.Message.GetExtendedTextMessage()
-        userMsg := strings.TrimSpace(body[len("!chatgpt"):])
-        var quotedText string
-        if ext != nil {
-            ctx := ext.GetContextInfo()
-            if ctx != nil && ctx.GetQuotedMessage() != nil {
-                qm := ctx.GetQuotedMessage()
-                quotedText = qm.GetConversation()
-                if quotedText == "" && qm.GetExtendedTextMessage() != nil {
-                    quotedText = qm.GetExtendedTextMessage().GetText()
+
+    // ==== grava histórico (ignora comandos, resumo e bodies vazios) ====
+    if isAuthorizedGroup(chatBare) &&
+       strings.TrimSpace(body) != "" &&
+       !strings.HasPrefix(body, "!") &&
+       !strings.HasPrefix(body, summaryMarker) {
+
+        var qf, qb string
+        if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+            if ctx := ext.GetContextInfo(); ctx != nil && ctx.GetQuotedMessage() != nil {
+                qb = ctx.GetQuotedMessage().GetConversation()
+                quoted := bareJID(ctx.GetParticipant())
+                if name, ok := contactNames[quoted]; ok {
+                    qf = fmt.Sprintf("%s (%s)", name, quoted)
+                } else {
+                    qf = quoted
                 }
             }
         }
-        finalPrompt := userMsg
-        if quotedText != "" {
-            finalPrompt = fmt.Sprintf("%s\n\nMensagem citada: %s", userMsg, quotedText)
-        }
-        if finalPrompt != "" {
-            req := go_openai.ChatCompletionRequest{Model: model, Messages: []go_openai.ChatCompletionMessage{{Role: go_openai.ChatMessageRoleUser, Content: promptChatGPT + "\n\n" + finalPrompt}}}
-            if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
-                sendText(cli, chatBare, resp.Choices[0].Message.Content)
+        messageHistory[chatBare] = append(messageHistory[chatBare], Msg{
+            From:       fromName,
+            Body:       body,
+            Timestamp:  v.Info.Timestamp,
+            QuotedFrom: qf,
+            QuotedBody: qb,
+        })
+    }
+
+    // ==== comandos na MINHA DM (!logs, !model, !grupos) ====
+    if isFromMe(senderJID) && isPrivateChat(chatBare) {
+        if strings.HasPrefix(body, "!logs ") {
+            parts := strings.Fields(body)
+            if len(parts) != 2 {
+                sendText(cli, chatBare, "Uso: !logs <groupJID>")
+            } else {
+                gid := parts[1]
+                logs := messageHistory[gid]
+                if len(logs) == 0 {
+                    sendText(cli, chatBare, "❌ Sem histórico para o grupo "+gid)
+                } else {
+                    var sb strings.Builder
+                    for _, m := range logs {
+                        if m.QuotedFrom != "" {
+                            sb.WriteString(fmt.Sprintf("%s — %s em resposta a %s: %s\n",
+                                m.Timestamp.Format("15:04"), m.From, m.QuotedFrom, m.Body))
+                        } else {
+                            sb.WriteString(fmt.Sprintf("%s — %s: %s\n",
+                                m.Timestamp.Format("15:04"), m.From, m.Body))
+                        }
+                    }
+                    sendText(cli, chatBare, sb.String())
+                }
             }
+            return
+        }
+        if strings.HasPrefix(body, "!grupos") {
+            parts := strings.Fields(body)
+            switch {
+            case len(parts) == 1:
+                var list []string
+                for g := range allowedGroups {
+                    list = append(list, g)
+                }
+                if len(list) == 0 {
+                    sendText(cli, chatBare, "Nenhum grupo autorizado.")
+                } else {
+                    sendText(cli, chatBare, "Grupos autorizados: "+strings.Join(list, ", "))
+                }
+            case len(parts) == 3 && parts[1] == "add":
+                gid := parts[2]
+                allowedGroups[gid] = true
+                sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s adicionado.", gid))
+            case len(parts) == 3 && parts[1] == "del":
+                gid := parts[2]
+                delete(allowedGroups, gid)
+                sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s removido.", gid))
+            default:
+                sendText(cli, chatBare, "Uso: !grupos [add|del] <chatJID>")
+            }
+            return
+        }
+        if body == "!model" {
+            sendText(cli, chatBare, fmt.Sprintf("Modelo atual: %s", model))
+            return
+        }
+        if strings.HasPrefix(body, "!model ") {
+            newModel := strings.TrimSpace(body[len("!model "):])
+            model = newModel
+            sendText(cli, chatBare, fmt.Sprintf("✅ Modelo alterado para %s", model))
+            return
         }
     }
 }
@@ -365,7 +426,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 func sendText(cli *whatsmeow.Client, to, text string) {
     jid, err := types.ParseJID(to)
     if err != nil {
-        log.Printf("⚠️  JID inválido %q: %v", to, err)
+        log.Printf("⚠️ JID inválido %q: %v", to, err)
         return
     }
     msg := &waProto.Message{Conversation: proto.String(text)}

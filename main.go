@@ -176,6 +176,23 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
         currentDay = time.Now().Day()
     }
 
+   if aud := v.Message.GetAudioMessage(); aud != nil {
+       data, err := cli.Download(aud)
+       if err == nil {
+           // tenta descobrir extensão; se não achar, cai em .ogg
+           exts, _ := mime.ExtensionsByType(aud.GetMimetype())
+           var ext string
+           if len(exts) > 0 {
+               ext = exts[0]
+           } else {
+               ext = ".ogg"
+           }
+           fn := path.Join(pathMp3, v.Info.ID+ext)
+           _ = os.WriteFile(fn, data, 0644)
+           log.Println("✅ Baixou Audio")
+       }
+   }
+
     // ==== comandos GLOBAIS (qualquer chat) ====
     if isFromMe(senderJID) {
         // !chatgpt
@@ -299,33 +316,32 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
     }
 
     // ==== comando !resumo (antes de gravar) ====
-    if isAuthorizedGroup(chatBare) && body == "!resumo" {
+    if isAuthorizedGroup(chatBare) && isFromMe(senderJID) && body == "!resumo" {
         log.Println("✅ Disparou !resumo")
-        hoje := time.Now().Truncate(24 * time.Hour)
-        msgs := messageHistory[chatBare]
+        logs := messageHistory[chatBare]
+        if len(logs) == 0 {
+            sendText(cli, chatBare, "❌ Sem mensagens para resumir hoje.")
+            return
+        }
         var sb strings.Builder
-        for _, m := range msgs {
-            if m.Timestamp.Truncate(24 * time.Hour).Equal(hoje) {
-                if m.QuotedFrom != "" {
-                    sb.WriteString(fmt.Sprintf("%s — %s em resposta a %s, que disse '%s': %s\n",
-                        m.Timestamp.Format("15:04"), m.From, m.QuotedFrom, m.QuotedBody, m.Body))
-                } else {
-                    sb.WriteString(fmt.Sprintf("%s — %s: %s\n",
-                        m.Timestamp.Format("15:04"), m.From, m.Body))
-                }
+        for _, m := range logs {
+            if m.QuotedFrom != "" {
+                sb.WriteString(fmt.Sprintf("%s — %s em resposta a %s, que disse '%s': %s\n",
+                    m.Timestamp.Format("15:04"), m.From, m.QuotedFrom, m.QuotedBody, m.Body))
+            } else {
+                sb.WriteString(fmt.Sprintf("%s — %s: %s\n\n",
+                    m.Timestamp.Format("15:04"), m.From, m.Body))
             }
         }
-        if sb.Len() > 0 {
-            req := go_openai.ChatCompletionRequest{
-                Model: model,
-                Messages: []go_openai.ChatCompletionMessage{{
-                    Role:    go_openai.ChatMessageRoleUser,
-                    Content: promptSummary + "\n\n" + sb.String(),
-                }},
-            }
-            if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
-                sendText(cli, chatBare, summaryMarker+" Resumo:\n"+resp.Choices[0].Message.Content)
-            }
+        req := go_openai.ChatCompletionRequest{
+            Model: model,
+            Messages: []go_openai.ChatCompletionMessage{{
+                Role:    go_openai.ChatMessageRoleUser,
+                Content: promptSummary + "\n\n" + sb.String(),
+            }},
+        }
+        if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
+            sendText(cli, chatBare, summaryMarker+" Resumo:\n"+resp.Choices[0].Message.Content)
         }
         return
     }
@@ -333,7 +349,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
     // ==== grava histórico (ignora comandos, resumo e bodies vazios) ====
     if isAuthorizedGroup(chatBare) &&
        strings.TrimSpace(body) != "" &&
-       !strings.HasPrefix(body, "!") &&
+       !strings.HasPrefix(body, "!resumo") &&
        !strings.HasPrefix(body, summaryMarker) {
 
         var qf, qb string

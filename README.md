@@ -14,8 +14,9 @@ Este repositório traz um bot de WhatsApp escrito em Go, usando [WhatsMeow](http
    - `GROUPS` – lista de `<chatJID>`s de grupos autorizados, separados por vírgula 
    - `PROMPT` – prompt base para `!resumo`  
    - `CHATGPT_PROMPT` – prompt base para `!chatgpt`  
-   - `MODEL` – modelo inicial (ex.: `gpt-4o-mini`)  
-   - `TZ` – fuso horário (ex.: `America/Sao_Paulo`)  
+   - `MODEL` – modelo inicial (ex.: `gpt-4o-mini`)
+   - `TZ` – fuso horário (ex.: `America/Sao_Paulo`)
+   - `INSTA_COOKIES_PATH` – caminho para o arquivo de cookies do Instagram (opcional)
 
 ---
 
@@ -68,6 +69,7 @@ docker-compose up --build -d
 |-----------------------------|--------------------------------|------------------------------------------|---------------------------------------------------------------------|
 | `!model`                    | Sua conversa consigo mesmo     | `!model`                                 | Mostra o modelo atual usado pelo bot na API OpenAI                  |
 | `!model <nome>`             | Sua conversa consigo mesmo     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container                |
+| `!insta <cookies>`          | Sua conversa consigo mesmo     | `!insta sessionid=abc`                  | Atualiza o arquivo de cookies usado para baixar vídeos do Instagram |
 | `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
 | `!resumo`                   | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
 | `!grupos`                   | Sua conversa consigo mesmo     | `!grupos`                                | Mostra os grupos monitorados para !resumo                           |

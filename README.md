@@ -58,7 +58,8 @@ Se já possuir um arquivo de cookies do Instagram, monte-o no container, por exe
 
 ```yaml
 volumes:
-  - ./insta_cookies.txt:/cookies/insta_cookies.txt:ro
+  # remova `:ro` se quiser atualizar os cookies via `!insta`
+  - ./insta_cookies.txt:/cookies/insta_cookies.txt
 ```
 Ou diretamente no `docker-compose.yml`
 

@@ -95,8 +95,12 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
 		log.Printf("erro temp file: %v", err)
 		return
 	}
+	tmpPath := tmp.Name()
 	tmp.Close()
-	defer os.Remove(tmp.Name())
+	if err := os.Remove(tmpPath); err != nil {
+		log.Printf("⚠️ erro removendo arquivo temporário antes do yt-dlp: %v", err)
+	}
+	defer os.Remove(tmpPath)
 
 	args := []string{"-f", "mp4"}
 	if strings.Contains(url, "instagram.com") && instaCookies != "" {
@@ -106,7 +110,7 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
 			log.Printf("⚠️ cookies file not found %s: %v", instaCookies, err)
 		}
 	}
-	args = append(args, "-o", tmp.Name(), url)
+	args = append(args, "-o", tmpPath, url)
 	log.Printf("▶️ yt-dlp %v", args)
 	cmd := exec.Command("yt-dlp", args...)
 	out, err := cmd.CombinedOutput()
@@ -115,9 +119,14 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
 		log.Printf("yt-dlp erro: %v", err)
 		return
 	}
-	data, err := os.ReadFile(tmp.Name())
+	data, err := os.ReadFile(tmpPath)
 	if err != nil {
 		log.Printf("erro lendo video: %v", err)
+		return
+	}
+	log.Printf("tamanho do video baixado: %d bytes", len(data))
+	if len(data) == 0 {
+		log.Printf("⚠️ arquivo de video vazio, download pode ter falhado")
 		return
 	}
 	up, err := cli.Upload(context.Background(), data, whatsmeow.MediaVideo)
@@ -141,6 +150,8 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
 	}
 	if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{VideoMessage: vidMsg}); err != nil {
 		log.Printf("erro enviando video: %v", err)
+	} else {
+		log.Printf("✅ video enviado para %s", chat)
 	}
 }
 

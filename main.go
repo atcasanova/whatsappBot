@@ -8,8 +8,10 @@ import (
     "mime"
     "net/http"
     "os"
+    "os/exec"
     "os/signal"
     "path"
+    "regexp"
     "strings"
     "syscall"
     "time"
@@ -77,6 +79,57 @@ func mustEnv(key, fallback string) string {
         return v
     }
     return fallback
+}
+
+var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)[^\s]*`)
+
+func extractVideoURL(text string) string {
+    match := reVideoURL.FindString(text)
+    return match
+}
+
+func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
+    tmp, err := os.CreateTemp("", "vid-*.mp4")
+    if err != nil {
+        log.Printf("erro temp file: %v", err)
+        return
+    }
+    tmp.Close()
+    defer os.Remove(tmp.Name())
+
+    cmd := exec.Command("/root/.local/bin/yt-dlp", "-f", "mp4", "-o", tmp.Name(), url)
+    out, err := cmd.CombinedOutput()
+    if err != nil {
+        log.Printf("yt-dlp erro: %v - %s", err, string(out))
+        return
+    }
+    data, err := os.ReadFile(tmp.Name())
+    if err != nil {
+        log.Printf("erro lendo video: %v", err)
+        return
+    }
+    up, err := cli.Upload(context.Background(), data, whatsmeow.MediaVideo)
+    if err != nil {
+        log.Printf("erro upload video: %v", err)
+        return
+    }
+    jid, err := types.ParseJID(chat)
+    if err != nil {
+        log.Printf("jid inválido: %v", err)
+        return
+    }
+    vidMsg := &waProto.VideoMessage{
+        Mimetype:      proto.String("video/mp4"),
+        URL:           proto.String(up.URL),
+        DirectPath:    proto.String(up.DirectPath),
+        MediaKey:      up.MediaKey,
+        FileEncSHA256: up.FileEncSHA256,
+        FileSHA256:    up.FileSHA256,
+        FileLength:    proto.Uint64(up.FileLength),
+    }
+    if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{VideoMessage: vidMsg}); err != nil {
+        log.Printf("erro enviando video: %v", err)
+    }
 }
 
 func init() {
@@ -282,6 +335,26 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
           }
           if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imageMsg}); err != nil {
               log.Printf("❌ falha ao enviar imagem: %v", err)
+          }
+          return
+        }
+        if body == "!download" {
+          log.Println("✅ Disparou !download")
+          if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+              if ctx := ext.GetContextInfo(); ctx != nil {
+                  if qm := ctx.GetQuotedMessage(); qm != nil {
+                      quotedText := qm.GetConversation()
+                      if quotedText == "" && qm.GetExtendedTextMessage() != nil {
+                          quotedText = qm.GetExtendedTextMessage().GetText()
+                      }
+                      url := extractVideoURL(quotedText)
+                      if url != "" {
+                          go downloadAndSendVideo(cli, chatBare, url)
+                      } else {
+                          sendText(cli, chatBare, "❌ Link inválido para download.")
+                      }
+                  }
+              }
           }
           return
         }

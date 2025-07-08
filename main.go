@@ -102,13 +102,17 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
 	if strings.Contains(url, "instagram.com") && instaCookies != "" {
 		if _, err := os.Stat(instaCookies); err == nil {
 			args = append(args, "--cookies", instaCookies)
+		} else {
+			log.Printf("⚠️ cookies file not found %s: %v", instaCookies, err)
 		}
 	}
 	args = append(args, "-o", tmp.Name(), url)
+	log.Printf("▶️ yt-dlp %v", args)
 	cmd := exec.Command("yt-dlp", args...)
 	out, err := cmd.CombinedOutput()
+	log.Printf("yt-dlp output: %s", string(out))
 	if err != nil {
-		log.Printf("yt-dlp erro: %v - %s", err, string(out))
+		log.Printf("yt-dlp erro: %v", err)
 		return
 	}
 	data, err := os.ReadFile(tmp.Name())

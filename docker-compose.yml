@@ -14,9 +14,11 @@ services:
        - PROMPT="Resuma as seguintes mensagens de forma clara, destacando os participantes da conversa e o que cada um disse. Destaque momentos interessantes, e não hesite em apontar quando alguém deixou uma pergunta sem resposta. O resumo deve ser curto o suficiente para ser lido em até um minuto:"
        - CHATGPT_PROMPT=""
        - MODEL=gpt-4.1-nano
+       - INSTA_COOKIES_PATH=/cookies/insta_cookies.txt
     volumes:
        - sessiongo:/session
        - mp3go:/mp3
+       - instacookies:/cookies/insta_cookies.txt:ro
 
 volumes:
   sessiongo:
@@ -30,5 +32,11 @@ volumes:
     driver_opts:
       type: none
       device: /opt/whatsappBot/mp3
+      o: bind
+  instacookies:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/whatsappBot/insta_cookies.txt
       o: bind
 

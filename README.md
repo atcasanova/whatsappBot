@@ -16,7 +16,8 @@ Este repositório traz um bot de WhatsApp escrito em Go, usando [WhatsMeow](http
    - `CHATGPT_PROMPT` – prompt base para `!chatgpt`  
    - `MODEL` – modelo inicial (ex.: `gpt-4o-mini`)
    - `TZ` – fuso horário (ex.: `America/Sao_Paulo`)
-   - `INSTA_COOKIES_PATH` – caminho para o arquivo de cookies do Instagram (opcional)
+   - `INSTA_COOKIES_PATH` – caminho para o arquivo de cookies do Instagram (opcional).
+     Monte o arquivo no container e informe o caminho aqui para que o `yt-dlp` consiga autenticar.
 
 ---
 
@@ -51,6 +52,13 @@ PROMPT="Resuma as mensagens do dia:"
 CHATGPT_PROMPT="Responda ao texto a seguir:"
 MODEL=gpt-4o-mini
 TZ=America/Sao_Paulo
+INSTA_COOKIES_PATH=/cookies/insta_cookies.txt
+```
+Se já possuir um arquivo de cookies do Instagram, monte-o no container, por exemplo:
+
+```yaml
+volumes:
+  - ./insta_cookies.txt:/cookies/insta_cookies.txt:ro
 ```
 Ou diretamente no `docker-compose.yml`
 
@@ -69,7 +77,7 @@ docker-compose up --build -d
 |-----------------------------|--------------------------------|------------------------------------------|---------------------------------------------------------------------|
 | `!model`                    | Sua conversa consigo mesmo     | `!model`                                 | Mostra o modelo atual usado pelo bot na API OpenAI                  |
 | `!model <nome>`             | Sua conversa consigo mesmo     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container                |
-| `!insta <cookies>`          | Sua conversa consigo mesmo     | `!insta sessionid=abc`                  | Atualiza o arquivo de cookies usado para baixar vídeos do Instagram |
+| `!insta <cookies>`          | Sua conversa consigo mesmo     | `!insta sessionid=abc`                  | Atualiza o conteúdo do arquivo de cookies usado pelo `yt-dlp`. Também é possível montar o arquivo e definir `INSTA_COOKIES_PATH`. |
 | `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
 | `!resumo`                   | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
 | `!grupos`                   | Sua conversa consigo mesmo     | `!grupos`                                | Mostra os grupos monitorados para !resumo                           |

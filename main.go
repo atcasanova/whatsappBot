@@ -349,21 +349,26 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		}
 		if body == "!download" {
 			log.Println("✅ Disparou !download")
+			var quotedText string
 			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
 				if ctx := ext.GetContextInfo(); ctx != nil {
 					if qm := ctx.GetQuotedMessage(); qm != nil {
-						quotedText := qm.GetConversation()
+						quotedText = qm.GetConversation()
 						if quotedText == "" && qm.GetExtendedTextMessage() != nil {
 							quotedText = qm.GetExtendedTextMessage().GetText()
 						}
-						url := extractVideoURL(quotedText)
-						if url != "" {
-							go downloadAndSendVideo(cli, chatBare, url)
-						} else {
-							sendText(cli, chatBare, "❌ Link inválido para download.")
-						}
 					}
 				}
+			}
+			if quotedText == "" {
+				sendText(cli, chatBare, "❌ Responda ao link para usar !download.")
+				return
+			}
+			url := extractVideoURL(quotedText)
+			if url != "" {
+				go downloadAndSendVideo(cli, chatBare, url)
+			} else {
+				sendText(cli, chatBare, "❌ Link inválido para download.")
 			}
 			return
 		}

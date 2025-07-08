@@ -4,7 +4,8 @@ FROM golang:1.24-alpine
 RUN apk add --no-cache \
       build-base \
       sqlite-dev \
-      tzdata
+      tzdata \
+      yt-dlp
 ENV TZ=America/Sao_Paulo
 
 WORKDIR /app

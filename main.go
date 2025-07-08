@@ -97,7 +97,7 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
     tmp.Close()
     defer os.Remove(tmp.Name())
 
-    cmd := exec.Command("/root/.local/bin/yt-dlp", "-f", "mp4", "-o", tmp.Name(), url)
+    cmd := exec.Command("yt-dlp", "-f", "mp4", "-o", tmp.Name(), url)
     out, err := cmd.CombinedOutput()
     if err != nil {
         log.Printf("yt-dlp erro: %v - %s", err, string(out))
@@ -135,7 +135,7 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
 func init() {
     if tz := os.Getenv("TZ"); tz != "" {
         if loc, err := time.LoadLocation(tz); err != nil {
-            log.Printf("⚠️ TZ inválido %%q: %%v", tz, err)
+            log.Printf("⚠️ TZ inválido %q: %v", tz, err)
         } else {
             time.Local = loc
             log.Printf("⏰ timezone setado para %s", loc)

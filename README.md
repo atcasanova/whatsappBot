@@ -18,6 +18,7 @@ Este repositório traz um bot de WhatsApp escrito em Go, usando [WhatsMeow](http
    - `TZ` – fuso horário (ex.: `America/Sao_Paulo`)
    - `INSTA_COOKIES_PATH` – caminho para o arquivo de cookies do Instagram (opcional).
      Monte o arquivo no container e informe o caminho aqui para que o `yt-dlp` consiga autenticar.
+   - `TIKTOK_COOKIES_PATH` – arquivo de cookies do TikTok (opcional, uso similar ao do Instagram).
 
 ---
 
@@ -53,6 +54,7 @@ CHATGPT_PROMPT="Responda ao texto a seguir:"
 MODEL=gpt-4o-mini
 TZ=America/Sao_Paulo
 INSTA_COOKIES_PATH=/cookies/insta_cookies.txt
+TIKTOK_COOKIES_PATH=/cookies/tiktok_cookies.txt
 ```
 Se já possuir um arquivo de cookies do Instagram, monte-o no container, por exemplo:
 
@@ -60,6 +62,7 @@ Se já possuir um arquivo de cookies do Instagram, monte-o no container, por exe
 volumes:
   # remova `:ro` se quiser atualizar os cookies via `!insta`
   - ./insta_cookies.txt:/cookies/insta_cookies.txt
+  - ./tiktok_cookies.txt:/cookies/tiktok_cookies.txt
 ```
 Ou diretamente no `docker-compose.yml`
 
@@ -79,6 +82,7 @@ docker-compose up --build -d
 | `!model`                    | Sua conversa consigo mesmo     | `!model`                                 | Mostra o modelo atual usado pelo bot na API OpenAI                  |
 | `!model <nome>`             | Sua conversa consigo mesmo     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container                |
 | `!insta <cookies>`          | Sua conversa consigo mesmo     | `!insta sessionid=abc`                  | Atualiza o conteúdo do arquivo de cookies usado pelo `yt-dlp`. Também é possível montar o arquivo e definir `INSTA_COOKIES_PATH`. |
+| `!tiktok <cookies>`         | Sua conversa consigo mesmo     | `!tiktok sid_tt=abc`                    | Atualiza os cookies do TikTok usados no `yt-dlp`. Também é possível montar o arquivo e definir `TIKTOK_COOKIES_PATH`. |
 | `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
 | `!resumo`                   | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
 | `!grupos`                   | Sua conversa consigo mesmo     | `!grupos`                                | Mostra os grupos monitorados para !resumo                           |
@@ -86,6 +90,7 @@ docker-compose up --build -d
 | `!grupos del <id do grupo>` | Sua conversa consigo mesmo     | `!grupos del 551199999999-14700@g.us`    | Remove grupos monitorados para !resumo                              |
 | `!chatgpt <txt>`            | Qualquer conversa              | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada ao ChatGPT e devolve a resposta     |
 | `!img <prompt>`             | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via DALL·E 3 (Standard) diretamente no chat |
+| `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa vídeos do Instagram, TikTok ou YouTube Shorts e envia no chat |
 
 ---
 

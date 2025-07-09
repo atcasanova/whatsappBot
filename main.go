@@ -49,6 +49,7 @@ var (
 	userJID        string
 	allowedGroups  map[string]bool
 	instaCookies   string
+	tiktokCookies  string
 	messageHistory = make(map[string][]Msg)
 	currentDay     = time.Now().Day()
 	contactNames   = make(map[string]string)
@@ -82,7 +83,7 @@ func mustEnv(key, fallback string) string {
 	return fallback
 }
 
-var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)[^\s]*`)
+var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be)[^\s]*`)
 
 func extractVideoURL(text string) string {
 	match := reVideoURL.FindString(text)
@@ -108,6 +109,13 @@ func downloadAndSendVideo(cli *whatsmeow.Client, chat string, url string) {
 			args = append(args, "--cookies", instaCookies)
 		} else {
 			log.Printf("⚠️ cookies file not found %s: %v", instaCookies, err)
+		}
+	}
+	if strings.Contains(url, "tiktok.com") && tiktokCookies != "" {
+		if _, err := os.Stat(tiktokCookies); err == nil {
+			args = append(args, "--cookies", tiktokCookies)
+		} else {
+			log.Printf("⚠️ cookies file not found %s: %v", tiktokCookies, err)
 		}
 	}
 	args = append(args, "-o", tmpPath, url)
@@ -179,6 +187,7 @@ func init() {
 	promptSummary = mustEnv("PROMPT", "Faça um resumo das seguintes mensagens...")
 	promptChatGPT = mustEnv("CHATGPT_PROMPT", "Responda ao questionamento a seguir...")
 	instaCookies = mustEnv("INSTA_COOKIES_PATH", "./insta_cookies.txt")
+	tiktokCookies = mustEnv("TIKTOK_COOKIES_PATH", "./tiktok_cookies.txt")
 
 	allowedGroups = make(map[string]bool)
 	for _, g := range strings.Split(mustEnv("GROUPS", ""), ",") {
@@ -548,6 +557,19 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				sendText(cli, chatBare, "❌ Falha ao salvar cookies: "+err.Error())
 			} else {
 				sendText(cli, chatBare, "✅ Cookies do Instagram atualizados.")
+			}
+			return
+		}
+		if strings.HasPrefix(body, "!tiktok ") {
+			cookies := strings.TrimSpace(body[len("!tiktok "):])
+			if cookies == "" {
+				sendText(cli, chatBare, "Uso: !tiktok <cookies>")
+				return
+			}
+			if err := os.WriteFile(tiktokCookies, []byte(cookies), 0600); err != nil {
+				sendText(cli, chatBare, "❌ Falha ao salvar cookies: "+err.Error())
+			} else {
+				sendText(cli, chatBare, "✅ Cookies do TikTok atualizados.")
 			}
 			return
 		}

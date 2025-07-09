@@ -83,7 +83,7 @@ func mustEnv(key, fallback string) string {
 	return fallback
 }
 
-var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be)[^\s]*`)
+var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com)[^\s]*`)
 
 func extractVideoURL(text string) string {
 	match := reVideoURL.FindString(text)

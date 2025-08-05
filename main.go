@@ -326,7 +326,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					Prompt:  prompt,
 					N:       1,
 					Size:    go_openai.CreateImageSize1024x1024,
-					Model:   go_openai.CreateImageModelDallE3,
+					Model:   "gpt-image-1",
 					Quality: go_openai.CreateImageQualityStandard,
 				},
 			)

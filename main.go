@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -334,16 +335,32 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				sendText(cli, chatBare, "❌ Erro ao gerar imagem: "+err.Error())
 				return
 			}
-			url := respImg.Data[0].URL
-			httpResp, err := http.Get(url)
-			if err != nil {
-				sendText(cli, chatBare, "❌ Falha ao baixar imagem: "+err.Error())
-				return
-			}
-			defer httpResp.Body.Close()
-			imgBytes, err := io.ReadAll(httpResp.Body)
-			if err != nil {
-				sendText(cli, chatBare, "❌ Não consegui ler a imagem: "+err.Error())
+			var (
+				imgBytes []byte
+				mimeType string
+			)
+			if url := respImg.Data[0].URL; url != "" {
+				httpResp, err := http.Get(url)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Falha ao baixar imagem: "+err.Error())
+					return
+				}
+				defer httpResp.Body.Close()
+				imgBytes, err = io.ReadAll(httpResp.Body)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Não consegui ler a imagem: "+err.Error())
+					return
+				}
+				mimeType = httpResp.Header.Get("Content-Type")
+			} else if b64 := respImg.Data[0].B64JSON; b64 != "" {
+				imgBytes, err = base64.StdEncoding.DecodeString(b64)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Não consegui decodificar a imagem: "+err.Error())
+					return
+				}
+				mimeType = "image/png"
+			} else {
+				sendText(cli, chatBare, "❌ Resposta da API sem imagem")
 				return
 			}
 			up, err := cli.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
@@ -358,7 +375,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			imageMsg := &waProto.ImageMessage{
 				Caption:       proto.String(prompt),
-				Mimetype:      proto.String(httpResp.Header.Get("Content-Type")),
+				Mimetype:      proto.String(mimeType),
 				URL:           proto.String(up.URL),
 				DirectPath:    proto.String(up.DirectPath),
 				MediaKey:      up.MediaKey,

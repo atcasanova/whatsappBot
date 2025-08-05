@@ -327,7 +327,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					N:       1,
 					Size:    go_openai.CreateImageSize1024x1024,
 					Model:   "gpt-image-1",
-					Quality: go_openai.CreateImageQualityStandard,
+					Quality: "high",
 				},
 			)
 			if err != nil {

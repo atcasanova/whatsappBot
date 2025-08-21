@@ -145,7 +145,10 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 			log.Printf("erro lendo arquivo %s: %v", f.Name(), err)
 			continue
 		}
-		mimeType := mime.TypeByExtension(path.Ext(f.Name()))
+		mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(f.Name())))
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
 		switch {
 		case strings.HasPrefix(mimeType, "video/"):
 			up, err := cli.Upload(context.Background(), data, whatsmeow.MediaVideo)

@@ -231,11 +231,12 @@ func init() {
 
 	dbLog := waLog.Stdout("DB", "ERROR", true)
 	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", sessionPath)
-	sqlContainer, err := sqlstore.New("sqlite3", dsn, dbLog)
+	ctx := context.Background()
+	sqlContainer, err := sqlstore.New(ctx, "sqlite3", dsn, dbLog)
 	if err != nil {
 		log.Fatalf("erro ao abrir store: %v", err)
 	}
-	deviceStore, err := sqlContainer.GetFirstDevice()
+	deviceStore, err := sqlContainer.GetFirstDevice(ctx)
 	if err != nil {
 		log.Fatalf("erro ao obter device store: %v", err)
 	}
@@ -296,7 +297,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	if aud := v.Message.GetAudioMessage(); aud != nil {
-		data, err := cli.Download(aud)
+		data, err := cli.Download(context.Background(), aud)
 		if err == nil {
 			// tenta descobrir extensão; se não achar, cai em .ogg
 			exts, _ := mime.ExtensionsByType(aud.GetMimetype())

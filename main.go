@@ -71,6 +71,24 @@ func isAuthorizedGroup(chat string) bool {
 	return allowedGroups[chat]
 }
 
+func logTriggerEvaluation(triggerName, chatBare, senderJID, body string) {
+	trimmedBody := strings.TrimSpace(body)
+	log.Printf(
+		"🔎 Trigger check %s: chat=%s authorized=%t allowedEntry=%t sender=%s isFromMe=%t userJID=%s bodyRaw=%q bodyTrimmed=%q matchesExact=%t historyCount=%d",
+		triggerName,
+		chatBare,
+		isAuthorizedGroup(chatBare),
+		allowedGroups[chatBare],
+		senderJID,
+		isFromMe(senderJID),
+		userJID,
+		body,
+		trimmedBody,
+		body == triggerName,
+		len(messageHistory[chatBare]),
+	)
+}
+
 func bareJID(full string) string {
 	parts := strings.SplitN(full, "@", 2)
 	local := strings.SplitN(parts[0], ":", 2)[0]
@@ -486,6 +504,9 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	// ==== comando !resumo (antes de gravar) ====
+	if strings.HasPrefix(strings.TrimSpace(body), "!resumo") {
+		logTriggerEvaluation("!resumo", chatBare, senderJID, body)
+	}
 	if isAuthorizedGroup(chatBare) && isFromMe(senderJID) && body == "!resumo" {
 		log.Println("✅ Disparou !resumo")
 		logs := messageHistory[chatBare]

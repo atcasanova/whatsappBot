@@ -59,28 +59,40 @@ var (
 // helpers de contexto
 type void struct{}
 
-func isFromMe(sender string) bool {
-	return sender == userJID
+func isFromMe(sender string, infoIsFromMe bool) bool {
+	if infoIsFromMe {
+		return true
+	}
+	if sender == userJID {
+		return true
+	}
+	if bareJID(sender) == userJID {
+		return true
+	}
+	return false
 }
 
 func isPrivateChat(chat string) bool {
-	return chat == userJID
+	return bareJID(chat) == userJID
 }
 
 func isAuthorizedGroup(chat string) bool {
 	return allowedGroups[chat]
 }
 
-func logTriggerEvaluation(triggerName, chatBare, senderJID, body string) {
+func logTriggerEvaluation(triggerName, chatBare, senderBare, senderFull, body string, infoIsFromMe bool) {
 	trimmedBody := strings.TrimSpace(body)
+	calculatedIsFromMe := isFromMe(senderBare, infoIsFromMe)
 	log.Printf(
-		"🔎 Trigger check %s: chat=%s authorized=%t allowedEntry=%t sender=%s isFromMe=%t userJID=%s bodyRaw=%q bodyTrimmed=%q matchesExact=%t historyCount=%d",
+		"🔎 Trigger check %s: chat=%s authorized=%t allowedEntry=%t senderBare=%s senderFull=%s isFromMe=%t infoIsFromMe=%t userJID=%s bodyRaw=%q bodyTrimmed=%q matchesExact=%t historyCount=%d",
 		triggerName,
 		chatBare,
 		isAuthorizedGroup(chatBare),
 		allowedGroups[chatBare],
-		senderJID,
-		isFromMe(senderJID),
+		senderBare,
+		senderFull,
+		calculatedIsFromMe,
+		infoIsFromMe,
 		userJID,
 		body,
 		trimmedBody,
@@ -304,9 +316,11 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		body = ext.GetText()
 	}
 	// JIDs
-	senderBare := bareJID(v.Info.Sender.String())
+	senderFull := v.Info.Sender.String()
+	senderBare := bareJID(senderFull)
 	chatBare := bareJID(v.Info.Chat.String())
 	senderJID := senderBare
+	infoIsFromMe := v.Info.IsFromMe
 
 	// atualiza cache de nomes
 	fromName := v.Info.PushName
@@ -316,6 +330,15 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	contactNames[senderBare] = fromName
 
 	log.Printf("📥 DEBUG sender=%s chat=%s body=%q", senderBare, chatBare, body)
+
+	trimmedBody := strings.TrimSpace(body)
+	if strings.HasPrefix(trimmedBody, "!") {
+		commandName := trimmedBody
+		if idx := strings.IndexAny(trimmedBody, " \t\n"); idx != -1 {
+			commandName = trimmedBody[:idx]
+		}
+		logTriggerEvaluation(commandName, chatBare, senderBare, senderFull, body, infoIsFromMe)
+	}
 
 	// reset diário
 	if time.Now().Day() != currentDay {
@@ -341,7 +364,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	// ==== comandos GLOBAIS (qualquer chat) ====
-	if isFromMe(senderJID) {
+	if isFromMe(senderJID, infoIsFromMe) {
 		// !chatgpt
 		if strings.HasPrefix(body, "!chatgpt") {
 			log.Println("✅ Disparou !chatgpt")
@@ -504,10 +527,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	// ==== comando !resumo (antes de gravar) ====
-	if strings.HasPrefix(strings.TrimSpace(body), "!resumo") {
-		logTriggerEvaluation("!resumo", chatBare, senderJID, body)
-	}
-	if isAuthorizedGroup(chatBare) && isFromMe(senderJID) && body == "!resumo" {
+	if isAuthorizedGroup(chatBare) && isFromMe(senderJID, infoIsFromMe) && body == "!resumo" {
 		log.Println("✅ Disparou !resumo")
 		logs := messageHistory[chatBare]
 		if len(logs) == 0 {
@@ -565,7 +585,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	// ==== comandos na MINHA DM (!logs, !model, !grupos) ====
-	if isFromMe(senderJID) && isPrivateChat(chatBare) {
+	if isFromMe(senderJID, infoIsFromMe) && isPrivateChat(chatBare) {
 		if strings.HasPrefix(body, "!logs ") {
 			parts := strings.Fields(body)
 			if len(parts) != 2 {

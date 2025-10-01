@@ -84,6 +84,15 @@ func mustEnv(key, fallback string) string {
 	return fallback
 }
 
+func normalizePhone(phone string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, phone)
+}
+
 var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com)[^\s]*`)
 
 func extractVideoURL(text string) string {
@@ -210,7 +219,7 @@ func init() {
 	openaiClient = go_openai.NewClient(os.Getenv("OPENAI_API_KEY"))
 	pathMp3 = mustEnv("PATH_MP3", ".")
 	sessionPath := mustEnv("PATH_SESSION", "./")
-	userPhone := mustEnv("USER_PHONE", "")
+	userPhone := normalizePhone(mustEnv("USER_PHONE", ""))
 	if userPhone == "" {
 		log.Fatal("USER_PHONE não definido")
 	}

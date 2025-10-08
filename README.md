@@ -84,6 +84,7 @@ docker-compose up --build -d
 | `!insta <cookies>`          | Sua conversa consigo mesmo     | `!insta sessionid=abc`                  | Atualiza o conteúdo do arquivo de cookies usado pelo `yt-dlp`. Também é possível montar o arquivo e definir `INSTA_COOKIES_PATH`. |
 | `!tiktok <cookies>`         | Sua conversa consigo mesmo     | `!tiktok sid_tt=abc`                    | Atualiza os cookies do TikTok usados no `yt-dlp`. Também é possível montar o arquivo e definir `TIKTOK_COOKIES_PATH`. |
 | `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
+| `!podcast`                  | Qualquer conversa              | `!podcast`                               | Transcreve o áudio citado e resume com clareza usando o modelo configurado |
 | `!resumo`                   | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
 | `!grupos`                   | Sua conversa consigo mesmo     | `!grupos`                                | Mostra os grupos monitorados para !resumo                           |
 | `!grupos add <id do grupo>` | Sua conversa consigo mesmo     | `!grupos add 551199999999-14700@g.us`    | Adiciona grupos monitorados para !resumo                            |

@@ -557,7 +557,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 										Content: fmt.Sprintf("Transcrição literal do áudio:\n\n%s\n\nExplique de forma muito clara o que a pessoa quis dizer.", tr.Text),
 									},
 								},
-								Temperature: 0.2,
+								Temperature: 1,
 							}
 							if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err != nil {
 								sendText(cli, chatBare, "❌ Erro ao resumir: "+err.Error())

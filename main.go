@@ -524,6 +524,52 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			return
 		}
+		// !podcast
+		if body == "!podcast" {
+			log.Println("✅ Disparou !podcast")
+			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+				if ctx := ext.GetContextInfo(); ctx != nil {
+					if qm := ctx.GetQuotedMessage(); qm != nil && qm.GetAudioMessage() != nil {
+						aud := qm.GetAudioMessage()
+						exts, _ := mime.ExtensionsByType(aud.GetMimetype())
+						ext := ".ogg"
+						if len(exts) > 0 {
+							ext = exts[0]
+						}
+						orig := ctx.GetStanzaId()
+						filePath := path.Join(pathMp3, orig+ext)
+						tr, err := openaiClient.CreateTranscription(
+							context.Background(),
+							go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
+						)
+						if err != nil {
+							sendText(cli, chatBare, "❌ Erro na transcrição: "+err.Error())
+						} else {
+							req := go_openai.ChatCompletionRequest{
+								Model: model,
+								Messages: []go_openai.ChatCompletionMessage{
+									{
+										Role:    go_openai.ChatMessageRoleSystem,
+										Content: "Você é um assistente que interpreta áudios transcritos e explica com clareza a mensagem principal.",
+									},
+									{
+										Role:    go_openai.ChatMessageRoleUser,
+										Content: fmt.Sprintf("Transcrição literal do áudio:\n\n%s\n\nExplique de forma muito clara o que a pessoa quis dizer.", tr.Text),
+									},
+								},
+								Temperature: 0.2,
+							}
+							if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err != nil {
+								sendText(cli, chatBare, "❌ Erro ao resumir: "+err.Error())
+							} else {
+								sendText(cli, chatBare, "🎧 "+strings.TrimSpace(resp.Choices[0].Message.Content))
+							}
+						}
+					}
+				}
+			}
+			return
+		}
 	}
 
 	// ==== comando !resumo (antes de gravar) ====

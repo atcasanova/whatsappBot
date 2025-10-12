@@ -123,7 +123,34 @@ func normalizePhone(phone string) string {
 	}, phone)
 }
 
-var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com)[^\s]*`)
+var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|threads\.net|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com)[^\s]*`)
+
+func convertVideoToMP4(inputPath string) (string, error) {
+	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_converted.mp4"
+	args := []string{
+		"-y",
+		"-i", inputPath,
+		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", "23",
+		"-movflags", "+faststart",
+		"-pix_fmt", "yuv420p",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		outputPath,
+	}
+	log.Printf("🎬 ffmpeg %v", args)
+	cmd := exec.Command("ffmpeg", args...)
+	out, err := cmd.CombinedOutput()
+	if len(out) > 0 {
+		log.Printf("ffmpeg output: %s", string(out))
+	}
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg falhou: %w", err)
+	}
+	return outputPath, nil
+}
 
 func extractVideoURL(text string) string {
 	match := reVideoURL.FindString(text)
@@ -139,7 +166,7 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	defer os.RemoveAll(tmpDir)
 
 	args := []string{}
-	if strings.Contains(url, "instagram.com") && instaCookies != "" {
+	if (strings.Contains(url, "instagram.com") || strings.Contains(url, "threads.net")) && instaCookies != "" {
 		if _, err := os.Stat(instaCookies); err == nil {
 			args = append(args, "--cookies", instaCookies)
 		} else {
@@ -190,6 +217,18 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 		}
 		switch {
 		case strings.HasPrefix(mimeType, "video/"):
+			convertedPath, err := convertVideoToMP4(fp)
+			if err != nil {
+				log.Printf("⚠️ falha ao converter video: %v", err)
+			} else {
+				fp = convertedPath
+				data, err = os.ReadFile(fp)
+				if err != nil {
+					log.Printf("erro lendo video convertido %s: %v", fp, err)
+					continue
+				}
+				mimeType = "video/mp4"
+			}
 			up, err := cli.Upload(context.Background(), data, whatsmeow.MediaVideo)
 			if err != nil {
 				log.Printf("erro upload video: %v", err)

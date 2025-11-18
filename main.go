@@ -331,6 +331,13 @@ func init() {
 	if err := client.Connect(); err != nil {
 		log.Fatalf("falha ao conectar: %v", err)
 	}
+	go func() {
+		for {
+			// FIXED: Added context.Background() as the first argument
+			_ = client.SendPresence(context.Background(), types.PresenceAvailable)
+			time.Sleep(1 * time.Hour)
+		}
+	}()
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.LoggedOut:

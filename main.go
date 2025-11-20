@@ -399,11 +399,6 @@ func init() {
 }
 
 func handleMessage(cli *whatsmeow.Client, v *events.Message) {
-	// 1) extrai texto
-	body := v.Message.GetConversation()
-	if ext := v.Message.GetExtendedTextMessage(); ext != nil {
-		body = ext.GetText()
-	}
 	// JIDs
 	senderFull := v.Info.Sender.String()
 	senderBare := bareJID(senderFull)
@@ -411,12 +406,37 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	senderJID := senderBare
 	infoIsFromMe := v.Info.IsFromMe
 
+	// ignora status e newsletters vazios
+	if chatBare == "status@broadcast" || strings.HasSuffix(chatBare, "@newsletter") {
+		return
+	}
+
 	// atualiza cache de nomes
 	fromName := v.Info.PushName
 	if fromName == "" {
 		fromName = senderBare
 	}
 	contactNames[senderBare] = fromName
+
+	if reaction := v.Message.GetReactionMessage(); reaction != nil {
+		reactionText := reaction.GetText()
+		targetID := ""
+		targetChat := chatBare
+		if key := reaction.GetKey(); key != nil {
+			targetID = key.GetId()
+			if remote := key.GetRemoteJid(); remote != "" {
+				targetChat = bareJID(remote)
+			}
+		}
+		log.Printf("😊 Reaction=%q from=%s chat=%s msgID=%s", reactionText, senderBare, targetChat, targetID)
+		return
+	}
+
+	// 1) extrai texto
+	body := v.Message.GetConversation()
+	if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+		body = ext.GetText()
+	}
 
 	log.Printf("📥 DEBUG sender=%s chat=%s body=%q", senderBare, chatBare, body)
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"math/rand"
 	"mime"
 	"net/http"
 	"os"
@@ -105,6 +107,53 @@ func bareJID(full string) string {
 	parts := strings.SplitN(full, "@", 2)
 	local := strings.SplitN(parts[0], ":", 2)[0]
 	return local + "@" + parts[1]
+}
+
+func sendKeepAlive(cli *whatsmeow.Client) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return cli.SendPresence(ctx, types.PresenceAvailable)
+}
+
+func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {
+	if max <= min {
+		return min
+	}
+	span := max - min
+	base := time.Duration(r.Int63n(int64(span))) + min
+
+	jitterRange := time.Duration(float64(base) * jitterFraction)
+	if jitterRange == 0 {
+		return base
+	}
+	offset := time.Duration(r.Int63n(int64(jitterRange*2)+1)) - jitterRange
+	return base + offset
+}
+
+func startKeepAliveLoop(cli *whatsmeow.Client) {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	const minInterval = 6 * time.Hour
+	const maxInterval = 48 * time.Hour
+	const jitterFraction = 0.10
+	backoff := minInterval
+
+	go func() {
+		for {
+			interval := jitteredInterval(r, minInterval, maxInterval, jitterFraction)
+			if backoff > interval {
+				interval = backoff
+			}
+			time.Sleep(interval)
+
+			if err := sendKeepAlive(cli); err != nil {
+				log.Printf("⚠️ keep-alive falhou: %v", err)
+				backoff = time.Duration(math.Min(float64(backoff*2), float64(maxInterval)))
+				continue
+			}
+
+			backoff = minInterval
+		}
+	}()
 }
 
 func mustEnv(key, fallback string) string {
@@ -331,13 +380,7 @@ func init() {
 	if err := client.Connect(); err != nil {
 		log.Fatalf("falha ao conectar: %v", err)
 	}
-	go func() {
-		for {
-			// FIXED: Added context.Background() as the first argument
-			_ = client.SendPresence(context.Background(), types.PresenceAvailable)
-			time.Sleep(1 * time.Hour)
-		}
-	}()
+	startKeepAliveLoop(client)
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.LoggedOut:
@@ -384,6 +427,11 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			commandName = trimmedBody[:idx]
 		}
 		logTriggerEvaluation(commandName, chatBare, senderBare, senderFull, body, infoIsFromMe)
+		go func() {
+			if err := sendKeepAlive(cli); err != nil {
+				log.Printf("⚠️ keep-alive falhou ao detectar trigger: %v", err)
+			}
+		}()
 	}
 
 	// reset diário

@@ -423,8 +423,8 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		targetID := ""
 		targetChat := chatBare
 		if key := reaction.GetKey(); key != nil {
-			targetID = key.GetId()
-			if remote := key.GetRemoteJid(); remote != "" {
+			targetID = key.GetID()
+			if remote := key.GetRemoteJID(); remote != "" {
 				targetChat = bareJID(remote)
 			}
 		}
@@ -622,7 +622,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 						if len(exts) > 0 {
 							ext = exts[0]
 						}
-						orig := ctx.GetStanzaId()
+						orig := ctx.GetStanzaID()
 						filePath := path.Join(pathMp3, orig+ext)
 						tr, err := openaiClient.CreateTranscription(
 							context.Background(),
@@ -650,7 +650,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 						if len(exts) > 0 {
 							ext = exts[0]
 						}
-						orig := ctx.GetStanzaId()
+						orig := ctx.GetStanzaID()
 						filePath := path.Join(pathMp3, orig+ext)
 						tr, err := openaiClient.CreateTranscription(
 							context.Background(),

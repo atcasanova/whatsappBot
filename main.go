@@ -323,6 +323,77 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	}
 }
 
+func sendImageFromFile(cli *whatsmeow.Client, chat, filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("falha ao ler %s: %w", filePath, err)
+	}
+	mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(filePath)))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mimeType, "image/") {
+		return fmt.Errorf("arquivo %s não é imagem (mime=%s)", filePath, mimeType)
+	}
+	jid, err := types.ParseJID(chat)
+	if err != nil {
+		return fmt.Errorf("JID inválido %q: %w", chat, err)
+	}
+	up, err := cli.Upload(context.Background(), data, whatsmeow.MediaImage)
+	if err != nil {
+		return fmt.Errorf("upload da imagem falhou: %w", err)
+	}
+	imgMsg := &waProto.ImageMessage{
+		Mimetype:      proto.String(mimeType),
+		URL:           proto.String(up.URL),
+		DirectPath:    proto.String(up.DirectPath),
+		MediaKey:      up.MediaKey,
+		FileEncSHA256: up.FileEncSHA256,
+		FileSHA256:    up.FileSHA256,
+		FileLength:    proto.Uint64(up.FileLength),
+	}
+	if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imgMsg}); err != nil {
+		return fmt.Errorf("falha ao enviar imagem: %w", err)
+	}
+	return nil
+}
+
+func sendDocumentFromFile(cli *whatsmeow.Client, chat, filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("falha ao ler %s: %w", filePath, err)
+	}
+	mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(filePath)))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	jid, err := types.ParseJID(chat)
+	if err != nil {
+		return fmt.Errorf("JID inválido %q: %w", chat, err)
+	}
+	up, err := cli.Upload(context.Background(), data, whatsmeow.MediaDocument)
+	if err != nil {
+		return fmt.Errorf("upload do documento falhou: %w", err)
+	}
+	docMsg := &waProto.DocumentMessage{
+		Mimetype:      proto.String(mimeType),
+		URL:           proto.String(up.URL),
+		DirectPath:    proto.String(up.DirectPath),
+		MediaKey:      up.MediaKey,
+		FileEncSHA256: up.FileEncSHA256,
+		FileSHA256:    up.FileSHA256,
+		FileLength:    proto.Uint64(up.FileLength),
+		FileName:      proto.String(path.Base(filePath)),
+	}
+	if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{DocumentMessage: docMsg}); err != nil {
+		return fmt.Errorf("falha ao enviar documento: %w", err)
+	}
+	return nil
+}
+
 func init() {
 	if tz := os.Getenv("TZ"); tz != "" {
 		if loc, err := time.LoadLocation(tz); err != nil {
@@ -479,6 +550,22 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 
 	// ==== comandos GLOBAIS (qualquer chat) ====
 	if isFromMe(senderJID, infoIsFromMe) {
+		if trimmedBody == "!carteirinha" {
+			log.Println("✅ Disparou !carteirinha")
+			if err := sendImageFromFile(cli, chatBare, "carteirinha.jpg"); err != nil {
+				log.Printf("❌ Falha ao enviar carteirinha: %v", err)
+				sendText(cli, chatBare, "❌ "+err.Error())
+			}
+			return
+		}
+		if trimmedBody == "!cnh" {
+			log.Println("✅ Disparou !cnh")
+			if err := sendDocumentFromFile(cli, chatBare, "cnh.pdf"); err != nil {
+				log.Printf("❌ Falha ao enviar CNH: %v", err)
+				sendText(cli, chatBare, "❌ "+err.Error())
+			}
+			return
+		}
 		// !chatgpt
 		if strings.HasPrefix(body, "!chatgpt") {
 			log.Println("✅ Disparou !chatgpt")

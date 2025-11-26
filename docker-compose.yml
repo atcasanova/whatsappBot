@@ -15,6 +15,7 @@ services:
        - CHATGPT_PROMPT=""
        - MODEL=gpt-4.1-nano
        - INSTA_COOKIES_PATH=/cookies/insta_cookies.txt
+       - DOWNLOAD_PROXY=socks5h://proxy.example.com:1080
     volumes:
        - sessiongo:/session
        - mp3go:/mp3

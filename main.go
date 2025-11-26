@@ -53,6 +53,7 @@ var (
 	allowedGroups  map[string]bool
 	instaCookies   string
 	tiktokCookies  string
+	downloadProxy  string
 	messageHistory = make(map[string][]Msg)
 	currentDay     = time.Now().Day()
 	contactNames   = make(map[string]string)
@@ -206,6 +207,41 @@ func extractVideoURL(text string) string {
 	return match
 }
 
+func cookieArgsForURL(url string) []string {
+	cookiePath := ""
+	switch {
+	case strings.Contains(url, "instagram.com") || strings.Contains(url, "threads.net"):
+		cookiePath = instaCookies
+	case strings.Contains(url, "tiktok.com"):
+		cookiePath = tiktokCookies
+	default:
+		return nil
+	}
+
+	if cookiePath == "" {
+		return nil
+	}
+
+	if _, err := os.Stat(cookiePath); err == nil {
+		return []string{"--cookies", cookiePath}
+	} else {
+		log.Printf("⚠️ cookies file not found %s: %v", cookiePath, err)
+		return nil
+	}
+}
+
+func runYtDlp(args []string) error {
+	log.Printf("▶️ yt-dlp %v", args)
+	cmd := exec.Command("yt-dlp", args...)
+	out, err := cmd.CombinedOutput()
+	log.Printf("yt-dlp output: %s", string(out))
+	if err != nil {
+		log.Printf("yt-dlp erro: %v", err)
+		return err
+	}
+	return nil
+}
+
 func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	tmpDir, err := os.MkdirTemp("", "vid-*")
 	if err != nil {
@@ -214,36 +250,54 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	args := []string{}
-	if (strings.Contains(url, "instagram.com") || strings.Contains(url, "threads.net")) && instaCookies != "" {
-		if _, err := os.Stat(instaCookies); err == nil {
-			args = append(args, "--cookies", instaCookies)
-		} else {
-			log.Printf("⚠️ cookies file not found %s: %v", instaCookies, err)
-		}
-	}
-	if strings.Contains(url, "tiktok.com") && tiktokCookies != "" {
-		if _, err := os.Stat(tiktokCookies); err == nil {
-			args = append(args, "--cookies", tiktokCookies)
-		} else {
-			log.Printf("⚠️ cookies file not found %s: %v", tiktokCookies, err)
-		}
-	}
 	tmpl := path.Join(tmpDir, "%(id)s.%(ext)s")
-	args = append(args, "-o", tmpl, url)
-	log.Printf("▶️ yt-dlp %v", args)
-	cmd := exec.Command("yt-dlp", args...)
-	out, err := cmd.CombinedOutput()
-	log.Printf("yt-dlp output: %s", string(out))
-	if err != nil {
-		log.Printf("yt-dlp erro: %v", err)
+	cookieArgs := cookieArgsForURL(url)
+
+	type downloadAttempt struct {
+		name           string
+		includeProxy   bool
+		includeCookies bool
 	}
 
-	files, err := os.ReadDir(tmpDir)
-	if err != nil {
-		log.Printf("erro listando diretório temporário: %v", err)
-		return
+	attempts := []downloadAttempt{
+		{name: "proxy sem cookies", includeProxy: true, includeCookies: false},
+		{name: "proxy com cookies", includeProxy: true, includeCookies: true},
+		{name: "direto com cookies", includeProxy: false, includeCookies: true},
 	}
+
+	var files []os.DirEntry
+	for _, attempt := range attempts {
+		args := []string{}
+		if attempt.includeProxy {
+			if downloadProxy == "" {
+				log.Printf("⚠️ proxy não configurado, pulando tentativa %s", attempt.name)
+				continue
+			}
+			args = append(args, "--proxy", downloadProxy)
+		}
+		if attempt.includeCookies {
+			if len(cookieArgs) == 0 {
+				log.Printf("⚠️ cookies não disponíveis, pulando tentativa %s", attempt.name)
+				continue
+			}
+			args = append(args, cookieArgs...)
+		}
+		args = append(args, "-o", tmpl, url)
+
+		if err := runYtDlp(args); err != nil {
+			continue
+		}
+
+		files, err = os.ReadDir(tmpDir)
+		if err != nil {
+			log.Printf("erro listando diretório temporário: %v", err)
+			return
+		}
+		if len(files) > 0 {
+			break
+		}
+	}
+
 	if len(files) == 0 {
 		log.Printf("⚠️ nenhum arquivo baixado")
 		return
@@ -419,6 +473,7 @@ func init() {
 	promptChatGPT = mustEnv("CHATGPT_PROMPT", "Responda ao questionamento a seguir...")
 	instaCookies = mustEnv("INSTA_COOKIES_PATH", "./insta_cookies.txt")
 	tiktokCookies = mustEnv("TIKTOK_COOKIES_PATH", "./tiktok_cookies.txt")
+	downloadProxy = mustEnv("DOWNLOAD_PROXY", "")
 
 	allowedGroups = make(map[string]bool)
 	for _, g := range strings.Split(mustEnv("GROUPS", ""), ",") {

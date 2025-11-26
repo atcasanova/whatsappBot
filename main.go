@@ -571,13 +571,28 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			log.Println("✅ Disparou !chatgpt")
 			ext := v.Message.GetExtendedTextMessage()
 			userMsg := strings.TrimSpace(body[len("!chatgpt"):])
-			var quotedText string
+			var (
+				quotedText  string
+				quotedImage []byte
+				quotedMime  string
+			)
 			if ext != nil {
 				if ctx := ext.GetContextInfo(); ctx != nil {
 					if qm := ctx.GetQuotedMessage(); qm != nil {
 						quotedText = qm.GetConversation()
 						if quotedText == "" && qm.GetExtendedTextMessage() != nil {
 							quotedText = qm.GetExtendedTextMessage().GetText()
+						}
+						if img := qm.GetImageMessage(); img != nil {
+							if data, err := cli.Download(context.Background(), img); err != nil {
+								log.Printf("⚠️ Falha ao baixar imagem citada: %v", err)
+							} else {
+								quotedImage = data
+								quotedMime = img.GetMimetype()
+								if quotedMime == "" {
+									quotedMime = http.DetectContentType(quotedImage)
+								}
+							}
 						}
 					}
 				}
@@ -586,13 +601,30 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			if quotedText != "" {
 				prompt = fmt.Sprintf("%s\n\nMensagem citada: %s", userMsg, quotedText)
 			}
-			if prompt != "" {
+			if prompt != "" || len(quotedImage) > 0 {
+				message := go_openai.ChatCompletionMessage{Role: go_openai.ChatMessageRoleUser}
+				if len(quotedImage) > 0 {
+					if quotedMime == "" {
+						quotedMime = "image/jpeg"
+					}
+					message.MultiContent = []go_openai.ChatMessagePart{
+						{
+							Type: go_openai.ChatMessagePartTypeText,
+							Text: promptChatGPT + "\n\n" + prompt,
+						},
+						{
+							Type: go_openai.ChatMessagePartTypeImageURL,
+							ImageURL: &go_openai.ChatMessageImageURL{
+								URL: fmt.Sprintf("data:%s;base64,%s", quotedMime, base64.StdEncoding.EncodeToString(quotedImage)),
+							},
+						},
+					}
+				} else {
+					message.Content = promptChatGPT + "\n\n" + prompt
+				}
 				req := go_openai.ChatCompletionRequest{
-					Model: model,
-					Messages: []go_openai.ChatCompletionMessage{{
-						Role:    go_openai.ChatMessageRoleUser,
-						Content: promptChatGPT + "\n\n" + prompt,
-					}},
+					Model:    model,
+					Messages: []go_openai.ChatCompletionMessage{message},
 				}
 				if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
 					sendText(cli, chatBare, resp.Choices[0].Message.Content)

@@ -582,27 +582,106 @@ func sendDocumentFromFile(cli *whatsmeow.Client, chat, filePath string) error {
 	return nil
 }
 
-func startBot(state *AppState) error {
-	if err := state.ConnectClient(); err != nil {
-		return err
+type config struct {
+	sessionPath string
+}
+
+func loadConfig() (*config, error) {
+	if tz := os.Getenv("TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err != nil {
+			log.Printf("⚠️ TZ inválido %q: %v", tz, err)
+		} else {
+			time.Local = loc
+			log.Printf("⏰ timezone setado para %s", loc)
+		}
 	}
-	startKeepAliveLoop(state.client)
-	state.client.AddEventHandler(func(evt interface{}) {
+	_ = godotenv.Load()
+
+	openaiClient = go_openai.NewClient(os.Getenv("OPENAI_API_KEY"))
+	pathMp3 = mustEnv("PATH_MP3", ".")
+	sessionPath := mustEnv("PATH_SESSION", "./")
+	userPhone := normalizePhone(mustEnv("USER_PHONE", ""))
+	if userPhone == "" {
+		return nil, fmt.Errorf("USER_PHONE não definido")
+	}
+	userJID = userPhone + "@s.whatsapp.net"
+
+	model = mustEnv("MODEL", "gpt-4o-mini")
+	promptSummary = mustEnv("PROMPT", "Faça um resumo das seguintes mensagens...")
+	promptChatGPT = mustEnv("CHATGPT_PROMPT", "Responda ao questionamento a seguir...")
+	instaCookies = mustEnv("INSTA_COOKIES_PATH", "./insta_cookies.txt")
+	tiktokCookies = mustEnv("TIKTOK_COOKIES_PATH", "./tiktok_cookies.txt")
+	downloadProxy = mustEnv("DOWNLOAD_PROXY", "")
+
+	allowedGroups = make(map[string]bool)
+	for _, g := range strings.Split(mustEnv("GROUPS", ""), ",") {
+		if g != "" {
+			allowedGroups[g] = true
+		}
+	}
+
+	return &config{sessionPath: sessionPath}, nil
+}
+
+func newClient(ctx context.Context, cfg *config) (*whatsmeow.Client, error) {
+	dbLog := waLog.Stdout("DB", "ERROR", true)
+	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", cfg.sessionPath)
+	sqlContainer, err := sqlstore.New(ctx, "sqlite3", dsn, dbLog)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao abrir store: %w", err)
+	}
+	deviceStore, err := sqlContainer.GetFirstDevice(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao obter device store: %w", err)
+	}
+	clientLog := waLog.Stdout("Client", "ERROR", true)
+	client := whatsmeow.NewClient(deviceStore, clientLog)
+
+	return client, nil
+}
+
+func runBot(ctx context.Context, client *whatsmeow.Client, cfg *config) error {
+	if client.Store.ID == nil {
+		qrChan, _ := client.GetQRChannel(ctx)
+		go func() {
+			for evt := range qrChan {
+				fmt.Println("QR Code:", evt.Code)
+			}
+		}()
+	}
+
+	if err := client.Connect(); err != nil {
+		return fmt.Errorf("falha ao conectar: %w", err)
+	}
+	startKeepAliveLoop(client)
+
+	errCh := make(chan error, 1)
+	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.LoggedOut:
 			log.Println("⚠️ logout remoto, limpando sessão e reiniciando...")
-			os.RemoveAll(state.sessionPath)
-			os.Exit(1)
+			os.RemoveAll(cfg.sessionPath)
+			select {
+			case errCh <- fmt.Errorf("logout remoto"):
+			default:
+			}
 		case *events.Message:
 			handleMessage(state, state.client, v)
 		}
 	})
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	<-c
-	state.client.Disconnect()
-	return nil
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("📴 sinal %s recebido, desconectando...", sig)
+		client.Disconnect()
+		return nil
+	case err := <-errCh:
+		client.Disconnect()
+		return err
+	}
 }
 
 func handleMessage(state *AppState, cli *whatsmeow.Client, v *events.Message) {
@@ -1098,22 +1177,22 @@ func sendText(cli *whatsmeow.Client, to, text string) {
 }
 
 func main() {
-	_ = godotenv.Load()
-	if tz := os.Getenv("TZ"); tz != "" {
-		if loc, err := time.LoadLocation(tz); err != nil {
-			log.Printf("⚠️ TZ inválido %q: %v", tz, err)
-		} else {
-			time.Local = loc
-			log.Printf("⏰ timezone setado para %s", loc)
-		}
-	}
+	ctx := context.Background()
 
-	state, err := NewAppState()
+	cfg, err := loadConfig()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("erro carregando configuração: %v", err)
+		os.Exit(1)
 	}
 
-	if err := startBot(state); err != nil {
-		log.Fatalf("falha ao iniciar bot: %v", err)
+	client, err := newClient(ctx, cfg)
+	if err != nil {
+		log.Printf("erro criando cliente: %v", err)
+		os.Exit(1)
+	}
+
+	if err := runBot(ctx, client, cfg); err != nil {
+		log.Printf("erro executando bot: %v", err)
+		os.Exit(1)
 	}
 }

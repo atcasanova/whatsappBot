@@ -16,6 +16,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,7 +44,7 @@ type Msg struct {
 	QuotedBody string // texto citado
 }
 
-var (
+type AppState struct {
 	openaiClient  *go_openai.Client
 	model         string
 	promptSummary string
@@ -53,7 +54,78 @@ var (
 	instaCookies  string
 	tiktokCookies string
 	downloadProxy string
-)
+	sessionPath   string
+
+	client *whatsmeow.Client
+
+	allowedGroups  map[string]bool
+	messageHistory map[string][]Msg
+	contactNames   map[string]string
+	currentDay     int
+
+	mu sync.RWMutex
+}
+
+func NewAppState() (*AppState, error) {
+	userPhone := normalizePhone(mustEnv("USER_PHONE", ""))
+	if userPhone == "" {
+		return nil, fmt.Errorf("USER_PHONE não definido")
+	}
+
+	state := &AppState{
+		openaiClient:   go_openai.NewClient(os.Getenv("OPENAI_API_KEY")),
+		model:          mustEnv("MODEL", "gpt-4o-mini"),
+		promptSummary:  mustEnv("PROMPT", "Faça um resumo das seguintes mensagens..."),
+		promptChatGPT:  mustEnv("CHATGPT_PROMPT", "Responda ao questionamento a seguir..."),
+		pathMp3:        mustEnv("PATH_MP3", "."),
+		instaCookies:   mustEnv("INSTA_COOKIES_PATH", "./insta_cookies.txt"),
+		tiktokCookies:  mustEnv("TIKTOK_COOKIES_PATH", "./tiktok_cookies.txt"),
+		downloadProxy:  mustEnv("DOWNLOAD_PROXY", ""),
+		sessionPath:    mustEnv("PATH_SESSION", "./"),
+		userJID:        userPhone + "@s.whatsapp.net",
+		allowedGroups:  make(map[string]bool),
+		messageHistory: make(map[string][]Msg),
+		contactNames:   make(map[string]string),
+		currentDay:     time.Now().Day(),
+	}
+
+	for _, g := range strings.Split(mustEnv("GROUPS", ""), ",") {
+		if g != "" {
+			state.allowedGroups[g] = true
+		}
+	}
+
+	return state, nil
+}
+
+func (s *AppState) ConnectClient() error {
+	dbLog := waLog.Stdout("DB", "ERROR", true)
+	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", s.sessionPath)
+	ctx := context.Background()
+	sqlContainer, err := sqlstore.New(ctx, "sqlite3", dsn, dbLog)
+	if err != nil {
+		return fmt.Errorf("erro ao abrir store: %w", err)
+	}
+	deviceStore, err := sqlContainer.GetFirstDevice(ctx)
+	if err != nil {
+		return fmt.Errorf("erro ao obter device store: %w", err)
+	}
+	clientLog := waLog.Stdout("Client", "ERROR", true)
+	client := whatsmeow.NewClient(deviceStore, clientLog)
+	s.client = client
+	if client.Store.ID == nil {
+		qrChan, _ := client.GetQRChannel(context.Background())
+		go func() {
+			for evt := range qrChan {
+				fmt.Println("QR Code:", evt.Code)
+			}
+		}()
+	}
+	if err := client.Connect(); err != nil {
+		return fmt.Errorf("falha ao conectar: %w", err)
+	}
+	return nil
+}
 
 type Bot struct {
 	cli            *whatsmeow.Client
@@ -77,21 +149,114 @@ type messageContext struct {
 // helpers de contexto
 type void struct{}
 
-func isFromMe(sender string, infoIsFromMe bool) bool {
+func isFromMe(state *AppState, sender string, infoIsFromMe bool) bool {
 	if infoIsFromMe {
 		return true
 	}
-	if sender == userJID {
+	if sender == state.userJID {
 		return true
 	}
-	if bareJID(sender) == userJID {
+	if bareJID(sender) == state.userJID {
 		return true
 	}
 	return false
 }
 
-func isPrivateChat(chat string) bool {
-	return bareJID(chat) == userJID
+func isPrivateChat(state *AppState, chat string) bool {
+	return bareJID(chat) == state.userJID
+}
+
+func isAuthorizedGroup(state *AppState, chat string) bool {
+	return state.isAllowedGroup(chat)
+}
+
+func logTriggerEvaluation(state *AppState, triggerName, chatBare, senderBare, senderFull, body string, infoIsFromMe bool) {
+	trimmedBody := strings.TrimSpace(body)
+	calculatedIsFromMe := isFromMe(state, senderBare, infoIsFromMe)
+	log.Printf(
+		"🔎 Trigger check %s: chat=%s authorized=%t allowedEntry=%t senderBare=%s senderFull=%s isFromMe=%t infoIsFromMe=%t userJID=%s bodyRaw=%q bodyTrimmed=%q matchesExact=%t historyCount=%d",
+		triggerName,
+		chatBare,
+		isAuthorizedGroup(state, chatBare),
+		state.isAllowedGroup(chatBare),
+		senderBare,
+		senderFull,
+		calculatedIsFromMe,
+		infoIsFromMe,
+		state.userJID,
+		body,
+		trimmedBody,
+		body == triggerName,
+		state.historyCount(chatBare),
+	)
+}
+
+func (s *AppState) isAllowedGroup(chat string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allowedGroups[chat]
+}
+
+func (s *AppState) addAllowedGroup(chat string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowedGroups[chat] = true
+}
+
+func (s *AppState) removeAllowedGroup(chat string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.allowedGroups, chat)
+}
+
+func (s *AppState) allowedGroupList() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]string, 0, len(s.allowedGroups))
+	for g := range s.allowedGroups {
+		list = append(list, g)
+	}
+	return list
+}
+
+func (s *AppState) historyCount(chat string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.messageHistory[chat])
+}
+
+func (s *AppState) appendHistory(chat string, msg Msg) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messageHistory[chat] = append(s.messageHistory[chat], msg)
+}
+
+func (s *AppState) historyForChat(chat string) []Msg {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]Msg(nil), s.messageHistory[chat]...)
+}
+
+func (s *AppState) resetHistoryIfNeeded() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if time.Now().Day() != s.currentDay {
+		s.messageHistory = make(map[string][]Msg)
+		s.currentDay = time.Now().Day()
+	}
+}
+
+func (s *AppState) setContactName(jid, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contactNames[jid] = name
+}
+
+func (s *AppState) contactName(jid string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	name, ok := s.contactNames[jid]
+	return name, ok
 }
 
 func bareJID(full string) string {
@@ -101,9 +266,7 @@ func bareJID(full string) string {
 }
 
 func sendKeepAlive(cli *whatsmeow.Client) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return cli.SendPresence(ctx, types.PresenceAvailable)
+	return cli.SendPresence(types.PresenceAvailable)
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {
@@ -343,13 +506,13 @@ func extractVideoURL(text string) string {
 	return match
 }
 
-func cookieArgsForURL(url string) []string {
+func cookieArgsForURL(state *AppState, url string) []string {
 	cookiePath := ""
 	switch {
 	case strings.Contains(url, "instagram.com") || strings.Contains(url, "threads.net"):
-		cookiePath = instaCookies
+		cookiePath = state.instaCookies
 	case strings.Contains(url, "tiktok.com"):
-		cookiePath = tiktokCookies
+		cookiePath = state.tiktokCookies
 	default:
 		return nil
 	}
@@ -378,7 +541,7 @@ func runYtDlp(args []string) error {
 	return nil
 }
 
-func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
+func downloadAndSendMedia(state *AppState, cli *whatsmeow.Client, chat string, url string) {
 	tmpDir, err := os.MkdirTemp("", "vid-*")
 	if err != nil {
 		log.Printf("erro temp dir: %v", err)
@@ -387,7 +550,7 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	defer os.RemoveAll(tmpDir)
 
 	tmpl := path.Join(tmpDir, "%(id)s.%(ext)s")
-	cookieArgs := cookieArgsForURL(url)
+	cookieArgs := cookieArgsForURL(state, url)
 
 	type downloadAttempt struct {
 		name           string
@@ -405,11 +568,11 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	for _, attempt := range attempts {
 		args := []string{}
 		if attempt.includeProxy {
-			if downloadProxy == "" {
+			if state.downloadProxy == "" {
 				log.Printf("⚠️ proxy não configurado, pulando tentativa %s", attempt.name)
 				continue
 			}
-			args = append(args, "--proxy", downloadProxy)
+			args = append(args, "--proxy", state.downloadProxy)
 		}
 		if attempt.includeCookies {
 			if len(cookieArgs) == 0 {
@@ -584,7 +747,11 @@ func sendDocumentFromFile(cli *whatsmeow.Client, chat, filePath string) error {
 	return nil
 }
 
-func init() {
+type config struct {
+	sessionPath string
+}
+
+func loadConfig() (*config, error) {
 	if tz := os.Getenv("TZ"); tz != "" {
 		if loc, err := time.LoadLocation(tz); err != nil {
 			log.Printf("⚠️ TZ inválido %q: %v", tz, err)
@@ -600,7 +767,7 @@ func init() {
 	sessionPath := mustEnv("PATH_SESSION", "./")
 	userPhone := normalizePhone(mustEnv("USER_PHONE", ""))
 	if userPhone == "" {
-		log.Fatal("USER_PHONE não definido")
+		return nil, fmt.Errorf("USER_PHONE não definido")
 	}
 	userJID = userPhone + "@s.whatsapp.net"
 
@@ -618,57 +785,88 @@ func init() {
 		}
 	}
 
+	return &config{sessionPath: sessionPath}, nil
+}
+
+func newClient(ctx context.Context, cfg *config) (*whatsmeow.Client, error) {
 	dbLog := waLog.Stdout("DB", "ERROR", true)
-	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", sessionPath)
-	ctx := context.Background()
+	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", cfg.sessionPath)
 	sqlContainer, err := sqlstore.New(ctx, "sqlite3", dsn, dbLog)
 	if err != nil {
-		log.Fatalf("erro ao abrir store: %v", err)
+		return nil, fmt.Errorf("erro ao abrir store: %w", err)
 	}
 	deviceStore, err := sqlContainer.GetFirstDevice(ctx)
 	if err != nil {
-		log.Fatalf("erro ao obter device store: %v", err)
+		return nil, fmt.Errorf("erro ao obter device store: %w", err)
 	}
 	clientLog := waLog.Stdout("Client", "ERROR", true)
 	client := whatsmeow.NewClient(deviceStore, clientLog)
+
+	return client, nil
+}
+
+func runBot(ctx context.Context, client *whatsmeow.Client, cfg *config) error {
 	if client.Store.ID == nil {
-		qrChan, _ := client.GetQRChannel(context.Background())
+		qrChan, _ := client.GetQRChannel(ctx)
 		go func() {
 			for evt := range qrChan {
 				fmt.Println("QR Code:", evt.Code)
 			}
 		}()
 	}
+
 	if err := client.Connect(); err != nil {
-		log.Fatalf("falha ao conectar: %v", err)
+		return fmt.Errorf("falha ao conectar: %w", err)
 	}
 	startKeepAliveLoop(client)
-	bot := NewBot(client, allowedGroups)
+
+	errCh := make(chan error, 1)
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.LoggedOut:
 			log.Println("⚠️ logout remoto, limpando sessão e reiniciando...")
-			os.RemoveAll(sessionPath)
-			os.Exit(1)
+			os.RemoveAll(cfg.sessionPath)
+			select {
+			case errCh <- fmt.Errorf("logout remoto"):
+			default:
+			}
 		case *events.Message:
-			bot.handleMessage(v)
+			handleMessage(state, state.client, v)
 		}
 	})
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	<-c
-	client.Disconnect()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("📴 sinal %s recebido, desconectando...", sig)
+		client.Disconnect()
+		return nil
+	case err := <-errCh:
+		client.Disconnect()
+		return err
+	}
 }
 
-func (b *Bot) handleMessage(v *events.Message) {
-	ctx := b.buildContext(v)
+func handleMessage(state *AppState, cli *whatsmeow.Client, v *events.Message) {
+	// JIDs
+	senderFull := v.Info.Sender.String()
+	senderBare := bareJID(senderFull)
+	chatBare := bareJID(v.Info.Chat.String())
+	senderJID := senderBare
+	infoIsFromMe := v.Info.IsFromMe
 
 	if ctx.chatBare == "status@broadcast" || strings.HasSuffix(ctx.chatBare, "@newsletter") {
 		return
 	}
 
-	b.contactNames[ctx.senderBare] = ctx.fromName
+	// atualiza cache de nomes
+	fromName := v.Info.PushName
+	if fromName == "" {
+		fromName = senderBare
+	}
+	state.setContactName(senderBare, fromName)
 
 	if reaction := v.Message.GetReactionMessage(); reaction != nil {
 		reactionText := reaction.GetText()
@@ -698,19 +896,16 @@ func (b *Bot) handleMessage(v *events.Message) {
 		if handler(v, ctx) {
 			return
 		}
+		logTriggerEvaluation(state, commandName, chatBare, senderBare, senderFull, body, infoIsFromMe)
+		go func() {
+			if err := sendKeepAlive(cli); err != nil {
+				log.Printf("⚠️ keep-alive falhou ao detectar trigger: %v", err)
+			}
+		}()
 	}
 
-	b.recordHistory(v, ctx)
-
-	// comandos dependentes de DM ou permissões são tratados dentro dos handlers; se chegamos aqui, nada mais a fazer
-}
-
-func (b *Bot) resetDailyIfNeeded() {
-	if time.Now().Day() != b.currentDay {
-		b.messageHistory = make(map[string][]Msg)
-		b.currentDay = time.Now().Day()
-	}
-}
+	// reset diário
+	state.resetHistoryIfNeeded()
 
 func (b *Bot) saveAudioIfPresent(v *events.Message) {
 	if aud := v.Message.GetAudioMessage(); aud != nil {
@@ -723,56 +918,96 @@ func (b *Bot) saveAudioIfPresent(v *events.Message) {
 			} else {
 				ext = ".ogg"
 			}
-			fn := path.Join(pathMp3, v.Info.ID+ext)
+			fn := path.Join(state.pathMp3, v.Info.ID+ext)
 			_ = os.WriteFile(fn, data, 0644)
 			log.Println("✅ Baixou Audio")
 		}
 	}
 }
 
-func (b *Bot) extractQuotedMetadata(v *events.Message) (string, string) {
-	if ext := v.Message.GetExtendedTextMessage(); ext != nil {
-		if ctx := ext.GetContextInfo(); ctx != nil && ctx.GetQuotedMessage() != nil {
-			quotedBody := ctx.GetQuotedMessage().GetConversation()
-			quoted := bareJID(ctx.GetParticipant())
-			quotedFrom := quoted
-			if name, ok := b.contactNames[quoted]; ok {
-				quotedFrom = fmt.Sprintf("%s (%s)", name, quoted)
+	// ==== comandos GLOBAIS (qualquer chat) ====
+	if isFromMe(state, senderJID, infoIsFromMe) {
+		if trimmedBody == "!carteirinha" {
+			log.Println("✅ Disparou !carteirinha")
+			if err := sendImageFromFile(cli, chatBare, "carteirinha.jpg"); err != nil {
+				log.Printf("❌ Falha ao enviar carteirinha: %v", err)
+				sendText(cli, chatBare, "❌ "+err.Error())
+			}
+			return
+		}
+		if trimmedBody == "!cnh" {
+			log.Println("✅ Disparou !cnh")
+			if err := sendDocumentFromFile(cli, chatBare, "cnh.pdf"); err != nil {
+				log.Printf("❌ Falha ao enviar CNH: %v", err)
+				sendText(cli, chatBare, "❌ "+err.Error())
 			}
 			return quotedBody, quotedFrom
 		}
-	}
-	return "", ""
-}
-
-func (b *Bot) recordHistory(v *events.Message, ctx messageContext) {
-	if b.isAuthorizedGroup(ctx.chatBare) &&
-		ctx.trimmedBody != "" &&
-		!strings.HasPrefix(ctx.trimmedBody, "!resumo") &&
-		!strings.HasPrefix(ctx.trimmedBody, summaryMarker) {
-
-		qb, qf := b.extractQuotedMetadata(v)
-		b.messageHistory[ctx.chatBare] = append(b.messageHistory[ctx.chatBare], Msg{
-			From:       ctx.fromName,
-			Body:       ctx.body,
-			Timestamp:  v.Info.Timestamp,
-			QuotedFrom: qf,
-			QuotedBody: qb,
-		})
-	}
-}
-
-func (b *Bot) handleCarteirinha(_ *events.Message, ctx messageContext) bool {
-	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) {
-		return false
-	}
-	log.Println("✅ Disparou !carteirinha")
-	if err := sendImageFromFile(b.cli, ctx.chatBare, "carteirinha.jpg"); err != nil {
-		log.Printf("❌ Falha ao enviar carteirinha: %v", err)
-		sendText(b.cli, ctx.chatBare, "❌ "+err.Error())
-	}
-	return true
-}
+		// !chatgpt
+		if strings.HasPrefix(body, "!chatgpt") {
+			log.Println("✅ Disparou !chatgpt")
+			ext := v.Message.GetExtendedTextMessage()
+			userMsg := strings.TrimSpace(body[len("!chatgpt"):])
+			var (
+				quotedText  string
+				quotedImage []byte
+				quotedMime  string
+			)
+			if ext != nil {
+				if ctx := ext.GetContextInfo(); ctx != nil {
+					if qm := ctx.GetQuotedMessage(); qm != nil {
+						quotedText = qm.GetConversation()
+						if quotedText == "" && qm.GetExtendedTextMessage() != nil {
+							quotedText = qm.GetExtendedTextMessage().GetText()
+						}
+						if img := qm.GetImageMessage(); img != nil {
+							if data, err := cli.Download(context.Background(), img); err != nil {
+								log.Printf("⚠️ Falha ao baixar imagem citada: %v", err)
+							} else {
+								quotedImage = data
+								quotedMime = img.GetMimetype()
+								if quotedMime == "" {
+									quotedMime = http.DetectContentType(quotedImage)
+								}
+							}
+						}
+					}
+				}
+			}
+			prompt := userMsg
+			if quotedText != "" {
+				prompt = fmt.Sprintf("%s\n\nMensagem citada: %s", userMsg, quotedText)
+			}
+			if prompt != "" || len(quotedImage) > 0 {
+				message := go_openai.ChatCompletionMessage{Role: go_openai.ChatMessageRoleUser}
+				if len(quotedImage) > 0 {
+					if quotedMime == "" {
+						quotedMime = "image/jpeg"
+					}
+					message.MultiContent = []go_openai.ChatMessagePart{
+						{
+							Type: go_openai.ChatMessagePartTypeText,
+							Text: state.promptChatGPT + "\n\n" + prompt,
+						},
+						{
+							Type: go_openai.ChatMessagePartTypeImageURL,
+							ImageURL: &go_openai.ChatMessageImageURL{
+								URL: fmt.Sprintf("data:%s;base64,%s", quotedMime, base64.StdEncoding.EncodeToString(quotedImage)),
+							},
+						},
+					}
+				} else {
+					message.Content = state.promptChatGPT + "\n\n" + prompt
+				}
+				req := go_openai.ChatCompletionRequest{
+					Model:    state.model,
+					Messages: []go_openai.ChatCompletionMessage{message},
+				}
+				if resp, err := state.openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
+					sendText(cli, chatBare, resp.Choices[0].Message.Content)
+				}
+			}
+			return
 
 func (b *Bot) handleCNH(_ *events.Message, ctx messageContext) bool {
 	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) {
@@ -806,76 +1041,119 @@ func (b *Bot) handleChatGPT(v *events.Message, ctx messageContext) bool {
 		if quotedMime == "" {
 			quotedMime = "image/jpeg"
 		}
-		message.MultiContent = []go_openai.ChatMessagePart{
-			{
-				Type: go_openai.ChatMessagePartTypeText,
-				Text: promptChatGPT + "\n\n" + prompt,
-			},
-			{
-				Type: go_openai.ChatMessagePartTypeImageURL,
-				ImageURL: &go_openai.ChatMessageImageURL{
-					URL: fmt.Sprintf("data:%s;base64,%s", quotedMime, base64.StdEncoding.EncodeToString(quotedImage)),
+		// !img
+		if strings.HasPrefix(body, "!img ") {
+			prompt := strings.TrimSpace(body[len("!img "):])
+			log.Printf("🖼️ Gerando imagem para: %q", prompt)
+			respImg, err := state.openaiClient.CreateImage(
+				context.Background(),
+				go_openai.ImageRequest{
+					Prompt:  prompt,
+					N:       1,
+					Size:    go_openai.CreateImageSize1024x1024,
+					Model:   "gpt-image-1",
+					Quality: "high",
 				},
 			},
 		}
-	} else {
-		message.Content = promptChatGPT + "\n\n" + prompt
-	}
-	req := go_openai.ChatCompletionRequest{
-		Model:    model,
-		Messages: []go_openai.ChatCompletionMessage{message},
-	}
-	if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
-		sendText(b.cli, ctx.chatBare, resp.Choices[0].Message.Content)
-	}
-	return true
-}
-
-func (b *Bot) handleImg(_ *events.Message, ctx messageContext) bool {
-	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) {
-		return false
-	}
-	if !strings.HasPrefix(ctx.trimmedBody, "!img ") {
-		return false
-	}
-	prompt := strings.TrimSpace(ctx.trimmedBody[len("!img "):])
-	log.Printf("🖼️ Gerando imagem para: %q", prompt)
-	respImg, err := openaiClient.CreateImage(
-		context.Background(),
-		go_openai.ImageRequest{
-			Prompt:  prompt,
-			N:       1,
-			Size:    go_openai.CreateImageSize1024x1024,
-			Model:   "gpt-image-1",
-			Quality: "high",
-		},
-	)
-	if err != nil {
-		sendText(b.cli, ctx.chatBare, "❌ Erro ao gerar imagem: "+err.Error())
-		return true
-	}
-	var (
-		imgBytes []byte
-		mimeType string
-	)
-	if url := respImg.Data[0].URL; url != "" {
-		httpResp, err := http.Get(url)
-		if err != nil {
-			sendText(b.cli, ctx.chatBare, "❌ Falha ao baixar imagem: "+err.Error())
-			return true
+		if body == "!download" {
+			log.Println("✅ Disparou !download")
+			var quotedText string
+			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+				if ctx := ext.GetContextInfo(); ctx != nil {
+					if qm := ctx.GetQuotedMessage(); qm != nil {
+						quotedText = qm.GetConversation()
+						if quotedText == "" && qm.GetExtendedTextMessage() != nil {
+							quotedText = qm.GetExtendedTextMessage().GetText()
+						}
+					}
+				}
+			}
+			if quotedText == "" {
+				sendText(cli, chatBare, "❌ Responda ao link para usar !download.")
+				return
+			}
+			url := extractVideoURL(quotedText)
+			if url != "" {
+				go downloadAndSendMedia(state, cli, chatBare, url)
+			} else {
+				sendText(cli, chatBare, "❌ Link inválido para download.")
+			}
+			return
 		}
-		defer httpResp.Body.Close()
-		imgBytes, err = io.ReadAll(httpResp.Body)
-		if err != nil {
-			sendText(b.cli, ctx.chatBare, "❌ Não consegui ler a imagem: "+err.Error())
-			return true
+		// !ler
+		if body == "!ler" {
+			log.Println("✅ Disparou !ler")
+			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+				if ctx := ext.GetContextInfo(); ctx != nil {
+					if qm := ctx.GetQuotedMessage(); qm != nil && qm.GetAudioMessage() != nil {
+						aud := qm.GetAudioMessage()
+						exts, _ := mime.ExtensionsByType(aud.GetMimetype())
+						ext := ".ogg"
+						if len(exts) > 0 {
+							ext = exts[0]
+						}
+						orig := ctx.GetStanzaID()
+						filePath := path.Join(state.pathMp3, orig+ext)
+						tr, err := state.openaiClient.CreateTranscription(
+							context.Background(),
+							go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
+						)
+						if err != nil {
+							sendText(cli, chatBare, "❌ Erro na transcrição: "+err.Error())
+						} else {
+							sendText(cli, chatBare, "🗣️ "+tr.Text)
+						}
+					}
+				}
+			}
+			return
 		}
-		mimeType = httpResp.Header.Get("Content-Type")
-	} else if b64 := respImg.Data[0].B64JSON; b64 != "" {
-		imgBytes, err = base64.StdEncoding.DecodeString(b64)
-		if err != nil {
-			sendText(b.cli, ctx.chatBare, "❌ Não consegui decodificar a imagem: "+err.Error())
-			return true
+		// !podcast
+		if body == "!podcast" {
+			log.Println("✅ Disparou !podcast")
+			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+				if ctx := ext.GetContextInfo(); ctx != nil {
+					if qm := ctx.GetQuotedMessage(); qm != nil && qm.GetAudioMessage() != nil {
+						aud := qm.GetAudioMessage()
+						exts, _ := mime.ExtensionsByType(aud.GetMimetype())
+						ext := ".ogg"
+						if len(exts) > 0 {
+							ext = exts[0]
+						}
+						orig := ctx.GetStanzaID()
+						filePath := path.Join(state.pathMp3, orig+ext)
+						tr, err := state.openaiClient.CreateTranscription(
+							context.Background(),
+							go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
+						)
+						if err != nil {
+							sendText(cli, chatBare, "❌ Erro na transcrição: "+err.Error())
+						} else {
+							req := go_openai.ChatCompletionRequest{
+								Model: state.model,
+								Messages: []go_openai.ChatCompletionMessage{
+									{
+										Role:    go_openai.ChatMessageRoleSystem,
+										Content: "Você é um assistente que interpreta áudios transcritos e explica com clareza a mensagem principal.",
+									},
+									{
+										Role:    go_openai.ChatMessageRoleUser,
+										Content: fmt.Sprintf("Transcrição literal do áudio:\n\n%s\n\nExplique de forma muito clara o que a pessoa quis dizer.", tr.Text),
+									},
+								},
+								Temperature: 1,
+							}
+							if resp, err := state.openaiClient.CreateChatCompletion(context.Background(), req); err != nil {
+								sendText(cli, chatBare, "❌ Erro ao resumir: "+err.Error())
+							} else {
+								sendText(cli, chatBare, "🎧 "+strings.TrimSpace(resp.Choices[0].Message.Content))
+							}
+						}
+					}
+				}
+			}
+			return
 		}
 		mimeType = "image/png"
 	} else {
@@ -908,94 +1186,35 @@ func (b *Bot) handleImg(_ *events.Message, ctx messageContext) bool {
 	return true
 }
 
-func (b *Bot) handleDownload(v *events.Message, ctx messageContext) bool {
-	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) {
-		return false
-	}
-	log.Println("✅ Disparou !download")
-	quotedText := extractQuotedText(v)
-	if quotedText == "" {
-		sendText(b.cli, ctx.chatBare, "❌ Responda ao link para usar !download.")
-		return true
-	}
-	url := extractVideoURL(quotedText)
-	if url != "" {
-		go downloadAndSendMedia(b.cli, ctx.chatBare, url)
-	} else {
-		sendText(b.cli, ctx.chatBare, "❌ Link inválido para download.")
-	}
-	return true
-}
-
-func (b *Bot) handleLer(v *events.Message, ctx messageContext) bool {
-	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) {
-		return false
-	}
-	if ctx.trimmedBody != "!ler" {
-		return false
-	}
-	log.Println("✅ Disparou !ler")
-	aud, stanzaID := extractQuotedAudio(v)
-	if aud == nil {
-		return true
-	}
-	exts, _ := mime.ExtensionsByType(aud.GetMimetype())
-	ext := ".ogg"
-	if len(exts) > 0 {
-		ext = exts[0]
-	}
-	filePath := path.Join(pathMp3, stanzaID+ext)
-	tr, err := openaiClient.CreateTranscription(
-		context.Background(),
-		go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
-	)
-	if err != nil {
-		sendText(b.cli, ctx.chatBare, "❌ Erro na transcrição: "+err.Error())
-	} else {
-		sendText(b.cli, ctx.chatBare, "🗣️ "+tr.Text)
-	}
-	return true
-}
-
-func (b *Bot) handlePodcast(v *events.Message, ctx messageContext) bool {
-	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) {
-		return false
-	}
-	if ctx.trimmedBody != "!podcast" {
-		return false
-	}
-	log.Println("✅ Disparou !podcast")
-	aud, stanzaID := extractQuotedAudio(v)
-	if aud == nil {
-		return true
-	}
-	exts, _ := mime.ExtensionsByType(aud.GetMimetype())
-	ext := ".ogg"
-	if len(exts) > 0 {
-		ext = exts[0]
-	}
-	filePath := path.Join(pathMp3, stanzaID+ext)
-	tr, err := openaiClient.CreateTranscription(
-		context.Background(),
-		go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
-	)
-	if err != nil {
-		sendText(b.cli, ctx.chatBare, "❌ Erro na transcrição: "+err.Error())
-		return true
-	}
-	req := go_openai.ChatCompletionRequest{
-		Model: model,
-		Messages: []go_openai.ChatCompletionMessage{
-			{
-				Role:    go_openai.ChatMessageRoleSystem,
-				Content: "Você é um assistente que interpreta áudios transcritos e explica com clareza a mensagem principal.",
-			},
-			{
+	// ==== comando !resumo (antes de gravar) ====
+	if isAuthorizedGroup(state, chatBare) && isFromMe(state, senderJID, infoIsFromMe) && body == "!resumo" {
+		log.Println("✅ Disparou !resumo")
+		logs := state.historyForChat(chatBare)
+		if len(logs) == 0 {
+			sendText(cli, chatBare, "❌ Sem mensagens para resumir hoje.")
+			return
+		}
+		var sb strings.Builder
+		for _, m := range logs {
+			if m.QuotedFrom != "" {
+				sb.WriteString(fmt.Sprintf("%s — %s em resposta a %s, que disse '%s': %s\n",
+					m.Timestamp.Format("15:04"), m.From, m.QuotedFrom, m.QuotedBody, m.Body))
+			} else {
+				sb.WriteString(fmt.Sprintf("%s — %s: %s\n\n",
+					m.Timestamp.Format("15:04"), m.From, m.Body))
+			}
+		}
+		req := go_openai.ChatCompletionRequest{
+			Model: state.model,
+			Messages: []go_openai.ChatCompletionMessage{{
 				Role:    go_openai.ChatMessageRoleUser,
-				Content: fmt.Sprintf("Transcrição literal do áudio:\n\n%s\n\nExplique de forma muito clara o que a pessoa quis dizer.", tr.Text),
-			},
-		},
-		Temperature: 1,
+				Content: state.promptSummary + "\n\n" + sb.String(),
+			}},
+		}
+		if resp, err := state.openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
+			sendText(cli, chatBare, summaryMarker+" Resumo:\n"+resp.Choices[0].Message.Content)
+		}
+		return
 	}
 	if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err != nil {
 		sendText(b.cli, ctx.chatBare, "❌ Erro ao resumir: "+err.Error())
@@ -1005,25 +1224,31 @@ func (b *Bot) handlePodcast(v *events.Message, ctx messageContext) bool {
 	return true
 }
 
-func (b *Bot) handleResumo(_ *events.Message, ctx messageContext) bool {
-	if !b.isAuthorizedGroup(ctx.chatBare) || !isFromMe(ctx.senderBare, ctx.infoIsFromMe) || ctx.trimmedBody != "!resumo" {
-		return false
-	}
-	log.Println("✅ Disparou !resumo")
-	logs := b.messageHistory[ctx.chatBare]
-	if len(logs) == 0 {
-		sendText(b.cli, ctx.chatBare, "❌ Sem mensagens para resumir hoje.")
-		return true
-	}
-	var sb strings.Builder
-	for _, m := range logs {
-		if m.QuotedFrom != "" {
-			sb.WriteString(fmt.Sprintf("%s — %s em resposta a %s, que disse '%s': %s\n",
-				m.Timestamp.Format("15:04"), m.From, m.QuotedFrom, m.QuotedBody, m.Body))
-		} else {
-			sb.WriteString(fmt.Sprintf("%s — %s: %s\n\n",
-				m.Timestamp.Format("15:04"), m.From, m.Body))
+	// ==== grava histórico (ignora comandos, resumo e bodies vazios) ====
+	if isAuthorizedGroup(state, chatBare) &&
+		strings.TrimSpace(body) != "" &&
+		!strings.HasPrefix(body, "!resumo") &&
+		!strings.HasPrefix(body, summaryMarker) {
+
+		var qf, qb string
+		if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+			if ctx := ext.GetContextInfo(); ctx != nil && ctx.GetQuotedMessage() != nil {
+				qb = ctx.GetQuotedMessage().GetConversation()
+				quoted := bareJID(ctx.GetParticipant())
+				if name, ok := state.contactName(quoted); ok {
+					qf = fmt.Sprintf("%s (%s)", name, quoted)
+				} else {
+					qf = quoted
+				}
+			}
 		}
+		state.appendHistory(chatBare, Msg{
+			From:       fromName,
+			Body:       body,
+			Timestamp:  v.Info.Timestamp,
+			QuotedFrom: qf,
+			QuotedBody: qb,
+		})
 	}
 	req := go_openai.ChatCompletionRequest{
 		Model: model,
@@ -1038,50 +1263,91 @@ func (b *Bot) handleResumo(_ *events.Message, ctx messageContext) bool {
 	return true
 }
 
-func (b *Bot) handleLogs(_ *events.Message, ctx messageContext) bool {
-	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) || !isPrivateChat(ctx.chatBare) || !strings.HasPrefix(ctx.trimmedBody, "!logs ") {
-		return false
-	}
-	parts := strings.Fields(ctx.trimmedBody)
-	if len(parts) != 2 {
-		sendText(b.cli, ctx.chatBare, "Uso: !logs <groupJID>")
-		return true
-	}
-	gid := parts[1]
-	logs := b.messageHistory[gid]
-	if len(logs) == 0 {
-		sendText(b.cli, ctx.chatBare, "❌ Sem histórico para o grupo "+gid)
-		return true
-	}
-	var sb strings.Builder
-	for _, m := range logs {
-		if m.QuotedFrom != "" {
-			sb.WriteString(fmt.Sprintf("%s — %s em resposta a %s: %s\n",
-				m.Timestamp.Format("15:04"), m.From, m.QuotedFrom, m.Body))
-		} else {
-			sb.WriteString(fmt.Sprintf("%s — %s: %s\n",
-				m.Timestamp.Format("15:04"), m.From, m.Body))
+	// ==== comandos na MINHA DM (!logs, !model, !grupos) ====
+	if isFromMe(state, senderJID, infoIsFromMe) && isPrivateChat(state, chatBare) {
+		if strings.HasPrefix(body, "!logs ") {
+			parts := strings.Fields(body)
+			if len(parts) != 2 {
+				sendText(cli, chatBare, "Uso: !logs <groupJID>")
+			} else {
+				gid := parts[1]
+				logs := state.historyForChat(gid)
+				if len(logs) == 0 {
+					sendText(cli, chatBare, "❌ Sem histórico para o grupo "+gid)
+				} else {
+					var sb strings.Builder
+					for _, m := range logs {
+						if m.QuotedFrom != "" {
+							sb.WriteString(fmt.Sprintf("%s — %s em resposta a %s: %s\n",
+								m.Timestamp.Format("15:04"), m.From, m.QuotedFrom, m.Body))
+						} else {
+							sb.WriteString(fmt.Sprintf("%s — %s: %s\n",
+								m.Timestamp.Format("15:04"), m.From, m.Body))
+						}
+					}
+					sendText(cli, chatBare, sb.String())
+				}
+			}
+			return
 		}
-	}
-	sendText(b.cli, ctx.chatBare, sb.String())
-	return true
-}
-
-func (b *Bot) handleGrupos(_ *events.Message, ctx messageContext) bool {
-	if !isFromMe(ctx.senderBare, ctx.infoIsFromMe) || !isPrivateChat(ctx.chatBare) || !strings.HasPrefix(ctx.trimmedBody, "!grupos") {
-		return false
-	}
-	parts := strings.Fields(ctx.trimmedBody)
-	switch {
-	case len(parts) == 1:
-		var list []string
-		for g := range b.allowedGroups {
-			list = append(list, g)
+		if strings.HasPrefix(body, "!grupos") {
+			parts := strings.Fields(body)
+			switch {
+			case len(parts) == 1:
+				list := state.allowedGroupList()
+				if len(list) == 0 {
+					sendText(cli, chatBare, "Nenhum grupo autorizado.")
+				} else {
+					sendText(cli, chatBare, "Grupos autorizados: "+strings.Join(list, ", "))
+				}
+			case len(parts) == 3 && parts[1] == "add":
+				gid := parts[2]
+				state.addAllowedGroup(gid)
+				sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s adicionado.", gid))
+			case len(parts) == 3 && parts[1] == "del":
+				gid := parts[2]
+				state.removeAllowedGroup(gid)
+				sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s removido.", gid))
+			default:
+				sendText(cli, chatBare, "Uso: !grupos [add|del] <chatJID>")
+			}
+			return
 		}
-		if len(list) == 0 {
-			sendText(b.cli, ctx.chatBare, "Nenhum grupo autorizado.")
-		} else {
-			sendText(b.cli, ctx.chatBare, "Grupos autorizados: "+strings.Join(list, ", "))
+		if body == "!model" {
+			sendText(cli, chatBare, fmt.Sprintf("Modelo atual: %s", state.model))
+			return
+		}
+		if strings.HasPrefix(body, "!model ") {
+			newModel := strings.TrimSpace(body[len("!model "):])
+			state.model = newModel
+			sendText(cli, chatBare, fmt.Sprintf("✅ Modelo alterado para %s", state.model))
+			return
+		}
+		if strings.HasPrefix(body, "!insta ") {
+			cookies := strings.TrimSpace(body[len("!insta "):])
+			if cookies == "" {
+				sendText(cli, chatBare, "Uso: !insta <cookies>")
+				return
+			}
+			if err := os.WriteFile(state.instaCookies, []byte(cookies), 0600); err != nil {
+				sendText(cli, chatBare, "❌ Falha ao salvar cookies: "+err.Error())
+			} else {
+				sendText(cli, chatBare, "✅ Cookies do Instagram atualizados.")
+			}
+			return
+		}
+		if strings.HasPrefix(body, "!tiktok ") {
+			cookies := strings.TrimSpace(body[len("!tiktok "):])
+			if cookies == "" {
+				sendText(cli, chatBare, "Uso: !tiktok <cookies>")
+				return
+			}
+			if err := os.WriteFile(state.tiktokCookies, []byte(cookies), 0600); err != nil {
+				sendText(cli, chatBare, "❌ Falha ao salvar cookies: "+err.Error())
+			} else {
+				sendText(cli, chatBare, "✅ Cookies do TikTok atualizados.")
+			}
+			return
 		}
 	case len(parts) == 3 && parts[1] == "add":
 		gid := parts[2]
@@ -1157,4 +1423,23 @@ func sendText(cli *whatsmeow.Client, to, text string) {
 	}
 }
 
-func main() {}
+func main() {
+	ctx := context.Background()
+
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Printf("erro carregando configuração: %v", err)
+		os.Exit(1)
+	}
+
+	client, err := newClient(ctx, cfg)
+	if err != nil {
+		log.Printf("erro criando cliente: %v", err)
+		os.Exit(1)
+	}
+
+	if err := runBot(ctx, client, cfg); err != nil {
+		log.Printf("erro executando bot: %v", err)
+		os.Exit(1)
+	}
+}

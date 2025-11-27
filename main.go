@@ -16,6 +16,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,65 +44,200 @@ type Msg struct {
 	QuotedBody string // texto citado
 }
 
-var (
-	openaiClient   *go_openai.Client
-	model          string
-	promptSummary  string
-	promptChatGPT  string
-	pathMp3        string
-	userJID        string
+type AppState struct {
+	openaiClient  *go_openai.Client
+	model         string
+	promptSummary string
+	promptChatGPT string
+	pathMp3       string
+	userJID       string
+	instaCookies  string
+	tiktokCookies string
+	downloadProxy string
+	sessionPath   string
+
+	client *whatsmeow.Client
+
 	allowedGroups  map[string]bool
-	instaCookies   string
-	tiktokCookies  string
-	downloadProxy  string
-	messageHistory = make(map[string][]Msg)
-	currentDay     = time.Now().Day()
-	contactNames   = make(map[string]string)
-)
+	messageHistory map[string][]Msg
+	contactNames   map[string]string
+	currentDay     int
+
+	mu sync.RWMutex
+}
+
+func NewAppState() (*AppState, error) {
+	userPhone := normalizePhone(mustEnv("USER_PHONE", ""))
+	if userPhone == "" {
+		return nil, fmt.Errorf("USER_PHONE não definido")
+	}
+
+	state := &AppState{
+		openaiClient:   go_openai.NewClient(os.Getenv("OPENAI_API_KEY")),
+		model:          mustEnv("MODEL", "gpt-4o-mini"),
+		promptSummary:  mustEnv("PROMPT", "Faça um resumo das seguintes mensagens..."),
+		promptChatGPT:  mustEnv("CHATGPT_PROMPT", "Responda ao questionamento a seguir..."),
+		pathMp3:        mustEnv("PATH_MP3", "."),
+		instaCookies:   mustEnv("INSTA_COOKIES_PATH", "./insta_cookies.txt"),
+		tiktokCookies:  mustEnv("TIKTOK_COOKIES_PATH", "./tiktok_cookies.txt"),
+		downloadProxy:  mustEnv("DOWNLOAD_PROXY", ""),
+		sessionPath:    mustEnv("PATH_SESSION", "./"),
+		userJID:        userPhone + "@s.whatsapp.net",
+		allowedGroups:  make(map[string]bool),
+		messageHistory: make(map[string][]Msg),
+		contactNames:   make(map[string]string),
+		currentDay:     time.Now().Day(),
+	}
+
+	for _, g := range strings.Split(mustEnv("GROUPS", ""), ",") {
+		if g != "" {
+			state.allowedGroups[g] = true
+		}
+	}
+
+	return state, nil
+}
+
+func (s *AppState) ConnectClient() error {
+	dbLog := waLog.Stdout("DB", "ERROR", true)
+	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", s.sessionPath)
+	ctx := context.Background()
+	sqlContainer, err := sqlstore.New(ctx, "sqlite3", dsn, dbLog)
+	if err != nil {
+		return fmt.Errorf("erro ao abrir store: %w", err)
+	}
+	deviceStore, err := sqlContainer.GetFirstDevice(ctx)
+	if err != nil {
+		return fmt.Errorf("erro ao obter device store: %w", err)
+	}
+	clientLog := waLog.Stdout("Client", "ERROR", true)
+	client := whatsmeow.NewClient(deviceStore, clientLog)
+	s.client = client
+	if client.Store.ID == nil {
+		qrChan, _ := client.GetQRChannel(context.Background())
+		go func() {
+			for evt := range qrChan {
+				fmt.Println("QR Code:", evt.Code)
+			}
+		}()
+	}
+	if err := client.Connect(); err != nil {
+		return fmt.Errorf("falha ao conectar: %w", err)
+	}
+	return nil
+}
 
 // helpers de contexto
 type void struct{}
 
-func isFromMe(sender string, infoIsFromMe bool) bool {
+func isFromMe(state *AppState, sender string, infoIsFromMe bool) bool {
 	if infoIsFromMe {
 		return true
 	}
-	if sender == userJID {
+	if sender == state.userJID {
 		return true
 	}
-	if bareJID(sender) == userJID {
+	if bareJID(sender) == state.userJID {
 		return true
 	}
 	return false
 }
 
-func isPrivateChat(chat string) bool {
-	return bareJID(chat) == userJID
+func isPrivateChat(state *AppState, chat string) bool {
+	return bareJID(chat) == state.userJID
 }
 
-func isAuthorizedGroup(chat string) bool {
-	return allowedGroups[chat]
+func isAuthorizedGroup(state *AppState, chat string) bool {
+	return state.isAllowedGroup(chat)
 }
 
-func logTriggerEvaluation(triggerName, chatBare, senderBare, senderFull, body string, infoIsFromMe bool) {
+func logTriggerEvaluation(state *AppState, triggerName, chatBare, senderBare, senderFull, body string, infoIsFromMe bool) {
 	trimmedBody := strings.TrimSpace(body)
-	calculatedIsFromMe := isFromMe(senderBare, infoIsFromMe)
+	calculatedIsFromMe := isFromMe(state, senderBare, infoIsFromMe)
 	log.Printf(
 		"🔎 Trigger check %s: chat=%s authorized=%t allowedEntry=%t senderBare=%s senderFull=%s isFromMe=%t infoIsFromMe=%t userJID=%s bodyRaw=%q bodyTrimmed=%q matchesExact=%t historyCount=%d",
 		triggerName,
 		chatBare,
-		isAuthorizedGroup(chatBare),
-		allowedGroups[chatBare],
+		isAuthorizedGroup(state, chatBare),
+		state.isAllowedGroup(chatBare),
 		senderBare,
 		senderFull,
 		calculatedIsFromMe,
 		infoIsFromMe,
-		userJID,
+		state.userJID,
 		body,
 		trimmedBody,
 		body == triggerName,
-		len(messageHistory[chatBare]),
+		state.historyCount(chatBare),
 	)
+}
+
+func (s *AppState) isAllowedGroup(chat string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allowedGroups[chat]
+}
+
+func (s *AppState) addAllowedGroup(chat string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowedGroups[chat] = true
+}
+
+func (s *AppState) removeAllowedGroup(chat string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.allowedGroups, chat)
+}
+
+func (s *AppState) allowedGroupList() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]string, 0, len(s.allowedGroups))
+	for g := range s.allowedGroups {
+		list = append(list, g)
+	}
+	return list
+}
+
+func (s *AppState) historyCount(chat string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.messageHistory[chat])
+}
+
+func (s *AppState) appendHistory(chat string, msg Msg) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messageHistory[chat] = append(s.messageHistory[chat], msg)
+}
+
+func (s *AppState) historyForChat(chat string) []Msg {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]Msg(nil), s.messageHistory[chat]...)
+}
+
+func (s *AppState) resetHistoryIfNeeded() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if time.Now().Day() != s.currentDay {
+		s.messageHistory = make(map[string][]Msg)
+		s.currentDay = time.Now().Day()
+	}
+}
+
+func (s *AppState) setContactName(jid, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contactNames[jid] = name
+}
+
+func (s *AppState) contactName(jid string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	name, ok := s.contactNames[jid]
+	return name, ok
 }
 
 func bareJID(full string) string {
@@ -111,9 +247,7 @@ func bareJID(full string) string {
 }
 
 func sendKeepAlive(cli *whatsmeow.Client) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return cli.SendPresence(ctx, types.PresenceAvailable)
+	return cli.SendPresence(types.PresenceAvailable)
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {
@@ -207,13 +341,13 @@ func extractVideoURL(text string) string {
 	return match
 }
 
-func cookieArgsForURL(url string) []string {
+func cookieArgsForURL(state *AppState, url string) []string {
 	cookiePath := ""
 	switch {
 	case strings.Contains(url, "instagram.com") || strings.Contains(url, "threads.net"):
-		cookiePath = instaCookies
+		cookiePath = state.instaCookies
 	case strings.Contains(url, "tiktok.com"):
-		cookiePath = tiktokCookies
+		cookiePath = state.tiktokCookies
 	default:
 		return nil
 	}
@@ -242,7 +376,7 @@ func runYtDlp(args []string) error {
 	return nil
 }
 
-func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
+func downloadAndSendMedia(state *AppState, cli *whatsmeow.Client, chat string, url string) {
 	tmpDir, err := os.MkdirTemp("", "vid-*")
 	if err != nil {
 		log.Printf("erro temp dir: %v", err)
@@ -251,7 +385,7 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	defer os.RemoveAll(tmpDir)
 
 	tmpl := path.Join(tmpDir, "%(id)s.%(ext)s")
-	cookieArgs := cookieArgsForURL(url)
+	cookieArgs := cookieArgsForURL(state, url)
 
 	type downloadAttempt struct {
 		name           string
@@ -269,11 +403,11 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	for _, attempt := range attempts {
 		args := []string{}
 		if attempt.includeProxy {
-			if downloadProxy == "" {
+			if state.downloadProxy == "" {
 				log.Printf("⚠️ proxy não configurado, pulando tentativa %s", attempt.name)
 				continue
 			}
-			args = append(args, "--proxy", downloadProxy)
+			args = append(args, "--proxy", state.downloadProxy)
 		}
 		if attempt.includeCookies {
 			if len(cookieArgs) == 0 {
@@ -448,83 +582,30 @@ func sendDocumentFromFile(cli *whatsmeow.Client, chat, filePath string) error {
 	return nil
 }
 
-func init() {
-	if tz := os.Getenv("TZ"); tz != "" {
-		if loc, err := time.LoadLocation(tz); err != nil {
-			log.Printf("⚠️ TZ inválido %q: %v", tz, err)
-		} else {
-			time.Local = loc
-			log.Printf("⏰ timezone setado para %s", loc)
-		}
+func startBot(state *AppState) error {
+	if err := state.ConnectClient(); err != nil {
+		return err
 	}
-	_ = godotenv.Load()
-
-	openaiClient = go_openai.NewClient(os.Getenv("OPENAI_API_KEY"))
-	pathMp3 = mustEnv("PATH_MP3", ".")
-	sessionPath := mustEnv("PATH_SESSION", "./")
-	userPhone := normalizePhone(mustEnv("USER_PHONE", ""))
-	if userPhone == "" {
-		log.Fatal("USER_PHONE não definido")
-	}
-	userJID = userPhone + "@s.whatsapp.net"
-
-	model = mustEnv("MODEL", "gpt-4o-mini")
-	promptSummary = mustEnv("PROMPT", "Faça um resumo das seguintes mensagens...")
-	promptChatGPT = mustEnv("CHATGPT_PROMPT", "Responda ao questionamento a seguir...")
-	instaCookies = mustEnv("INSTA_COOKIES_PATH", "./insta_cookies.txt")
-	tiktokCookies = mustEnv("TIKTOK_COOKIES_PATH", "./tiktok_cookies.txt")
-	downloadProxy = mustEnv("DOWNLOAD_PROXY", "")
-
-	allowedGroups = make(map[string]bool)
-	for _, g := range strings.Split(mustEnv("GROUPS", ""), ",") {
-		if g != "" {
-			allowedGroups[g] = true
-		}
-	}
-
-	dbLog := waLog.Stdout("DB", "ERROR", true)
-	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", sessionPath)
-	ctx := context.Background()
-	sqlContainer, err := sqlstore.New(ctx, "sqlite3", dsn, dbLog)
-	if err != nil {
-		log.Fatalf("erro ao abrir store: %v", err)
-	}
-	deviceStore, err := sqlContainer.GetFirstDevice(ctx)
-	if err != nil {
-		log.Fatalf("erro ao obter device store: %v", err)
-	}
-	clientLog := waLog.Stdout("Client", "ERROR", true)
-	client := whatsmeow.NewClient(deviceStore, clientLog)
-	if client.Store.ID == nil {
-		qrChan, _ := client.GetQRChannel(context.Background())
-		go func() {
-			for evt := range qrChan {
-				fmt.Println("QR Code:", evt.Code)
-			}
-		}()
-	}
-	if err := client.Connect(); err != nil {
-		log.Fatalf("falha ao conectar: %v", err)
-	}
-	startKeepAliveLoop(client)
-	client.AddEventHandler(func(evt interface{}) {
+	startKeepAliveLoop(state.client)
+	state.client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.LoggedOut:
 			log.Println("⚠️ logout remoto, limpando sessão e reiniciando...")
-			os.RemoveAll(sessionPath)
+			os.RemoveAll(state.sessionPath)
 			os.Exit(1)
 		case *events.Message:
-			handleMessage(client, v)
+			handleMessage(state, state.client, v)
 		}
 	})
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
-	client.Disconnect()
+	state.client.Disconnect()
+	return nil
 }
 
-func handleMessage(cli *whatsmeow.Client, v *events.Message) {
+func handleMessage(state *AppState, cli *whatsmeow.Client, v *events.Message) {
 	// JIDs
 	senderFull := v.Info.Sender.String()
 	senderBare := bareJID(senderFull)
@@ -542,7 +623,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	if fromName == "" {
 		fromName = senderBare
 	}
-	contactNames[senderBare] = fromName
+	state.setContactName(senderBare, fromName)
 
 	if reaction := v.Message.GetReactionMessage(); reaction != nil {
 		reactionText := reaction.GetText()
@@ -572,7 +653,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		if idx := strings.IndexAny(trimmedBody, " \t\n"); idx != -1 {
 			commandName = trimmedBody[:idx]
 		}
-		logTriggerEvaluation(commandName, chatBare, senderBare, senderFull, body, infoIsFromMe)
+		logTriggerEvaluation(state, commandName, chatBare, senderBare, senderFull, body, infoIsFromMe)
 		go func() {
 			if err := sendKeepAlive(cli); err != nil {
 				log.Printf("⚠️ keep-alive falhou ao detectar trigger: %v", err)
@@ -581,10 +662,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	// reset diário
-	if time.Now().Day() != currentDay {
-		messageHistory = make(map[string][]Msg)
-		currentDay = time.Now().Day()
-	}
+	state.resetHistoryIfNeeded()
 
 	if aud := v.Message.GetAudioMessage(); aud != nil {
 		data, err := cli.Download(context.Background(), aud)
@@ -597,14 +675,14 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			} else {
 				ext = ".ogg"
 			}
-			fn := path.Join(pathMp3, v.Info.ID+ext)
+			fn := path.Join(state.pathMp3, v.Info.ID+ext)
 			_ = os.WriteFile(fn, data, 0644)
 			log.Println("✅ Baixou Audio")
 		}
 	}
 
 	// ==== comandos GLOBAIS (qualquer chat) ====
-	if isFromMe(senderJID, infoIsFromMe) {
+	if isFromMe(state, senderJID, infoIsFromMe) {
 		if trimmedBody == "!carteirinha" {
 			log.Println("✅ Disparou !carteirinha")
 			if err := sendImageFromFile(cli, chatBare, "carteirinha.jpg"); err != nil {
@@ -665,7 +743,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					message.MultiContent = []go_openai.ChatMessagePart{
 						{
 							Type: go_openai.ChatMessagePartTypeText,
-							Text: promptChatGPT + "\n\n" + prompt,
+							Text: state.promptChatGPT + "\n\n" + prompt,
 						},
 						{
 							Type: go_openai.ChatMessagePartTypeImageURL,
@@ -675,13 +753,13 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 						},
 					}
 				} else {
-					message.Content = promptChatGPT + "\n\n" + prompt
+					message.Content = state.promptChatGPT + "\n\n" + prompt
 				}
 				req := go_openai.ChatCompletionRequest{
-					Model:    model,
+					Model:    state.model,
 					Messages: []go_openai.ChatCompletionMessage{message},
 				}
-				if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
+				if resp, err := state.openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
 					sendText(cli, chatBare, resp.Choices[0].Message.Content)
 				}
 			}
@@ -692,7 +770,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		if strings.HasPrefix(body, "!img ") {
 			prompt := strings.TrimSpace(body[len("!img "):])
 			log.Printf("🖼️ Gerando imagem para: %q", prompt)
-			respImg, err := openaiClient.CreateImage(
+			respImg, err := state.openaiClient.CreateImage(
 				context.Background(),
 				go_openai.ImageRequest{
 					Prompt:  prompt,
@@ -778,7 +856,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			url := extractVideoURL(quotedText)
 			if url != "" {
-				go downloadAndSendMedia(cli, chatBare, url)
+				go downloadAndSendMedia(state, cli, chatBare, url)
 			} else {
 				sendText(cli, chatBare, "❌ Link inválido para download.")
 			}
@@ -797,8 +875,8 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 							ext = exts[0]
 						}
 						orig := ctx.GetStanzaID()
-						filePath := path.Join(pathMp3, orig+ext)
-						tr, err := openaiClient.CreateTranscription(
+						filePath := path.Join(state.pathMp3, orig+ext)
+						tr, err := state.openaiClient.CreateTranscription(
 							context.Background(),
 							go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
 						)
@@ -825,8 +903,8 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 							ext = exts[0]
 						}
 						orig := ctx.GetStanzaID()
-						filePath := path.Join(pathMp3, orig+ext)
-						tr, err := openaiClient.CreateTranscription(
+						filePath := path.Join(state.pathMp3, orig+ext)
+						tr, err := state.openaiClient.CreateTranscription(
 							context.Background(),
 							go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
 						)
@@ -834,7 +912,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 							sendText(cli, chatBare, "❌ Erro na transcrição: "+err.Error())
 						} else {
 							req := go_openai.ChatCompletionRequest{
-								Model: model,
+								Model: state.model,
 								Messages: []go_openai.ChatCompletionMessage{
 									{
 										Role:    go_openai.ChatMessageRoleSystem,
@@ -847,7 +925,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 								},
 								Temperature: 1,
 							}
-							if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err != nil {
+							if resp, err := state.openaiClient.CreateChatCompletion(context.Background(), req); err != nil {
 								sendText(cli, chatBare, "❌ Erro ao resumir: "+err.Error())
 							} else {
 								sendText(cli, chatBare, "🎧 "+strings.TrimSpace(resp.Choices[0].Message.Content))
@@ -861,9 +939,9 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	// ==== comando !resumo (antes de gravar) ====
-	if isAuthorizedGroup(chatBare) && isFromMe(senderJID, infoIsFromMe) && body == "!resumo" {
+	if isAuthorizedGroup(state, chatBare) && isFromMe(state, senderJID, infoIsFromMe) && body == "!resumo" {
 		log.Println("✅ Disparou !resumo")
-		logs := messageHistory[chatBare]
+		logs := state.historyForChat(chatBare)
 		if len(logs) == 0 {
 			sendText(cli, chatBare, "❌ Sem mensagens para resumir hoje.")
 			return
@@ -879,20 +957,20 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 		}
 		req := go_openai.ChatCompletionRequest{
-			Model: model,
+			Model: state.model,
 			Messages: []go_openai.ChatCompletionMessage{{
 				Role:    go_openai.ChatMessageRoleUser,
-				Content: promptSummary + "\n\n" + sb.String(),
+				Content: state.promptSummary + "\n\n" + sb.String(),
 			}},
 		}
-		if resp, err := openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
+		if resp, err := state.openaiClient.CreateChatCompletion(context.Background(), req); err == nil {
 			sendText(cli, chatBare, summaryMarker+" Resumo:\n"+resp.Choices[0].Message.Content)
 		}
 		return
 	}
 
 	// ==== grava histórico (ignora comandos, resumo e bodies vazios) ====
-	if isAuthorizedGroup(chatBare) &&
+	if isAuthorizedGroup(state, chatBare) &&
 		strings.TrimSpace(body) != "" &&
 		!strings.HasPrefix(body, "!resumo") &&
 		!strings.HasPrefix(body, summaryMarker) {
@@ -902,14 +980,14 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			if ctx := ext.GetContextInfo(); ctx != nil && ctx.GetQuotedMessage() != nil {
 				qb = ctx.GetQuotedMessage().GetConversation()
 				quoted := bareJID(ctx.GetParticipant())
-				if name, ok := contactNames[quoted]; ok {
+				if name, ok := state.contactName(quoted); ok {
 					qf = fmt.Sprintf("%s (%s)", name, quoted)
 				} else {
 					qf = quoted
 				}
 			}
 		}
-		messageHistory[chatBare] = append(messageHistory[chatBare], Msg{
+		state.appendHistory(chatBare, Msg{
 			From:       fromName,
 			Body:       body,
 			Timestamp:  v.Info.Timestamp,
@@ -919,14 +997,14 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	}
 
 	// ==== comandos na MINHA DM (!logs, !model, !grupos) ====
-	if isFromMe(senderJID, infoIsFromMe) && isPrivateChat(chatBare) {
+	if isFromMe(state, senderJID, infoIsFromMe) && isPrivateChat(state, chatBare) {
 		if strings.HasPrefix(body, "!logs ") {
 			parts := strings.Fields(body)
 			if len(parts) != 2 {
 				sendText(cli, chatBare, "Uso: !logs <groupJID>")
 			} else {
 				gid := parts[1]
-				logs := messageHistory[gid]
+				logs := state.historyForChat(gid)
 				if len(logs) == 0 {
 					sendText(cli, chatBare, "❌ Sem histórico para o grupo "+gid)
 				} else {
@@ -949,10 +1027,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			parts := strings.Fields(body)
 			switch {
 			case len(parts) == 1:
-				var list []string
-				for g := range allowedGroups {
-					list = append(list, g)
-				}
+				list := state.allowedGroupList()
 				if len(list) == 0 {
 					sendText(cli, chatBare, "Nenhum grupo autorizado.")
 				} else {
@@ -960,11 +1035,11 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				}
 			case len(parts) == 3 && parts[1] == "add":
 				gid := parts[2]
-				allowedGroups[gid] = true
+				state.addAllowedGroup(gid)
 				sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s adicionado.", gid))
 			case len(parts) == 3 && parts[1] == "del":
 				gid := parts[2]
-				delete(allowedGroups, gid)
+				state.removeAllowedGroup(gid)
 				sendText(cli, chatBare, fmt.Sprintf("✅ Grupo %s removido.", gid))
 			default:
 				sendText(cli, chatBare, "Uso: !grupos [add|del] <chatJID>")
@@ -972,13 +1047,13 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			return
 		}
 		if body == "!model" {
-			sendText(cli, chatBare, fmt.Sprintf("Modelo atual: %s", model))
+			sendText(cli, chatBare, fmt.Sprintf("Modelo atual: %s", state.model))
 			return
 		}
 		if strings.HasPrefix(body, "!model ") {
 			newModel := strings.TrimSpace(body[len("!model "):])
-			model = newModel
-			sendText(cli, chatBare, fmt.Sprintf("✅ Modelo alterado para %s", model))
+			state.model = newModel
+			sendText(cli, chatBare, fmt.Sprintf("✅ Modelo alterado para %s", state.model))
 			return
 		}
 		if strings.HasPrefix(body, "!insta ") {
@@ -987,7 +1062,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				sendText(cli, chatBare, "Uso: !insta <cookies>")
 				return
 			}
-			if err := os.WriteFile(instaCookies, []byte(cookies), 0600); err != nil {
+			if err := os.WriteFile(state.instaCookies, []byte(cookies), 0600); err != nil {
 				sendText(cli, chatBare, "❌ Falha ao salvar cookies: "+err.Error())
 			} else {
 				sendText(cli, chatBare, "✅ Cookies do Instagram atualizados.")
@@ -1000,7 +1075,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				sendText(cli, chatBare, "Uso: !tiktok <cookies>")
 				return
 			}
-			if err := os.WriteFile(tiktokCookies, []byte(cookies), 0600); err != nil {
+			if err := os.WriteFile(state.tiktokCookies, []byte(cookies), 0600); err != nil {
 				sendText(cli, chatBare, "❌ Falha ao salvar cookies: "+err.Error())
 			} else {
 				sendText(cli, chatBare, "✅ Cookies do TikTok atualizados.")
@@ -1022,4 +1097,23 @@ func sendText(cli *whatsmeow.Client, to, text string) {
 	}
 }
 
-func main() {}
+func main() {
+	_ = godotenv.Load()
+	if tz := os.Getenv("TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err != nil {
+			log.Printf("⚠️ TZ inválido %q: %v", tz, err)
+		} else {
+			time.Local = loc
+			log.Printf("⏰ timezone setado para %s", loc)
+		}
+	}
+
+	state, err := NewAppState()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := startBot(state); err != nil {
+		log.Fatalf("falha ao iniciar bot: %v", err)
+	}
+}

@@ -448,7 +448,11 @@ func sendDocumentFromFile(cli *whatsmeow.Client, chat, filePath string) error {
 	return nil
 }
 
-func init() {
+type config struct {
+	sessionPath string
+}
+
+func loadConfig() (*config, error) {
 	if tz := os.Getenv("TZ"); tz != "" {
 		if loc, err := time.LoadLocation(tz); err != nil {
 			log.Printf("⚠️ TZ inválido %q: %v", tz, err)
@@ -464,7 +468,7 @@ func init() {
 	sessionPath := mustEnv("PATH_SESSION", "./")
 	userPhone := normalizePhone(mustEnv("USER_PHONE", ""))
 	if userPhone == "" {
-		log.Fatal("USER_PHONE não definido")
+		return nil, fmt.Errorf("USER_PHONE não definido")
 	}
 	userJID = userPhone + "@s.whatsapp.net"
 
@@ -482,46 +486,68 @@ func init() {
 		}
 	}
 
+	return &config{sessionPath: sessionPath}, nil
+}
+
+func newClient(ctx context.Context, cfg *config) (*whatsmeow.Client, error) {
 	dbLog := waLog.Stdout("DB", "ERROR", true)
-	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", sessionPath)
-	ctx := context.Background()
+	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", cfg.sessionPath)
 	sqlContainer, err := sqlstore.New(ctx, "sqlite3", dsn, dbLog)
 	if err != nil {
-		log.Fatalf("erro ao abrir store: %v", err)
+		return nil, fmt.Errorf("erro ao abrir store: %w", err)
 	}
 	deviceStore, err := sqlContainer.GetFirstDevice(ctx)
 	if err != nil {
-		log.Fatalf("erro ao obter device store: %v", err)
+		return nil, fmt.Errorf("erro ao obter device store: %w", err)
 	}
 	clientLog := waLog.Stdout("Client", "ERROR", true)
 	client := whatsmeow.NewClient(deviceStore, clientLog)
+
+	return client, nil
+}
+
+func runBot(ctx context.Context, client *whatsmeow.Client, cfg *config) error {
 	if client.Store.ID == nil {
-		qrChan, _ := client.GetQRChannel(context.Background())
+		qrChan, _ := client.GetQRChannel(ctx)
 		go func() {
 			for evt := range qrChan {
 				fmt.Println("QR Code:", evt.Code)
 			}
 		}()
 	}
+
 	if err := client.Connect(); err != nil {
-		log.Fatalf("falha ao conectar: %v", err)
+		return fmt.Errorf("falha ao conectar: %w", err)
 	}
 	startKeepAliveLoop(client)
+
+	errCh := make(chan error, 1)
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.LoggedOut:
 			log.Println("⚠️ logout remoto, limpando sessão e reiniciando...")
-			os.RemoveAll(sessionPath)
-			os.Exit(1)
+			os.RemoveAll(cfg.sessionPath)
+			select {
+			case errCh <- fmt.Errorf("logout remoto"):
+			default:
+			}
 		case *events.Message:
 			handleMessage(client, v)
 		}
 	})
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	<-c
-	client.Disconnect()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("📴 sinal %s recebido, desconectando...", sig)
+		client.Disconnect()
+		return nil
+	case err := <-errCh:
+		client.Disconnect()
+		return err
+	}
 }
 
 func handleMessage(cli *whatsmeow.Client, v *events.Message) {
@@ -1022,4 +1048,23 @@ func sendText(cli *whatsmeow.Client, to, text string) {
 	}
 }
 
-func main() {}
+func main() {
+	ctx := context.Background()
+
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Printf("erro carregando configuração: %v", err)
+		os.Exit(1)
+	}
+
+	client, err := newClient(ctx, cfg)
+	if err != nil {
+		log.Printf("erro criando cliente: %v", err)
+		os.Exit(1)
+	}
+
+	if err := runBot(ctx, client, cfg); err != nil {
+		log.Printf("erro executando bot: %v", err)
+		os.Exit(1)
+	}
+}

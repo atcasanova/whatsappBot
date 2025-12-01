@@ -173,7 +173,7 @@ func normalizePhone(phone string) string {
 	}, phone)
 }
 
-var reVideoURL = regexp.MustCompile(`https?://[^\s]*?(instagram\.com|threads\.net|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com)[^\s]*`)
+var reVideoURL = regexp.MustCompile(`https?://[^\s]+`)
 
 func convertVideoToMP4(inputPath string) (string, error) {
 	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_converted.mp4"

@@ -91,7 +91,7 @@ docker-compose up --build -d
 | `!grupos del <id do grupo>` | Sua conversa consigo mesmo     | `!grupos del 551199999999-14700@g.us`    | Remove grupos monitorados para !resumo                              |
 | `!chatgpt <txt>`            | Qualquer conversa              | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada (texto **ou imagem**) ao ChatGPT e devolve a resposta |
 | `!img <prompt>`             | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via gpt-image-1 (qualidade média) diretamente no chat |
-| `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa vídeos do Instagram, TikTok, YouTube Shorts ou X/Twitter e envia no chat |
+| `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa mídias de qualquer site suportado pelo `yt-dlp` (Instagram, Threads, Facebook, TikTok, YouTube, X/Twitter etc.) e envia no chat |
 
 ---
 

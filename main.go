@@ -202,6 +202,63 @@ func convertVideoToMP4(inputPath string) (string, error) {
 	return outputPath, nil
 }
 
+func convertImageToStickerWebP(inputPath string) (string, error) {
+	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_sticker.webp"
+	args := []string{
+		"-y",
+		"-i", inputPath,
+		"-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000",
+		"-vcodec", "libwebp",
+		"-lossless", "1",
+		"-compression_level", "6",
+		"-q:v", "70",
+		"-preset", "picture",
+		"-an",
+		"-vsync", "0",
+		"-frames:v", "1",
+		outputPath,
+	}
+	log.Printf("🎨 ffmpeg %v", args)
+	cmd := exec.Command("ffmpeg", args...)
+	out, err := cmd.CombinedOutput()
+	if len(out) > 0 {
+		log.Printf("ffmpeg output: %s", string(out))
+	}
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg falhou: %w", err)
+	}
+	return outputPath, nil
+}
+
+func convertVideoToStickerWebP(inputPath string) (string, error) {
+	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_sticker.webp"
+	args := []string{
+		"-y",
+		"-i", inputPath,
+		"-t", "6",
+		"-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,fps=15,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000",
+		"-loop", "0",
+		"-an",
+		"-vsync", "0",
+		"-c:v", "libwebp",
+		"-quality", "80",
+		"-compression_level", "6",
+		"-q:v", "70",
+		"-preset", "picture",
+		outputPath,
+	}
+	log.Printf("🎞️ ffmpeg %v", args)
+	cmd := exec.Command("ffmpeg", args...)
+	out, err := cmd.CombinedOutput()
+	if len(out) > 0 {
+		log.Printf("ffmpeg output: %s", string(out))
+	}
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg falhou: %w", err)
+	}
+	return outputPath, nil
+}
+
 func extractVideoURL(text string) string {
 	match := reVideoURL.FindString(text)
 	return match
@@ -756,6 +813,117 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imageMsg}); err != nil {
 				log.Printf("❌ falha ao enviar imagem: %v", err)
+			}
+			return
+		}
+		if trimmedBody == "!sticker" {
+			log.Println("✅ Disparou !sticker")
+			ext := v.Message.GetExtendedTextMessage()
+			if ext == nil || ext.GetContextInfo() == nil || ext.GetContextInfo().GetQuotedMessage() == nil {
+				sendText(cli, chatBare, "❌ Responda a uma imagem ou vídeo curto para usar !sticker.")
+				return
+			}
+			ctx := ext.GetContextInfo()
+			qm := ctx.GetQuotedMessage()
+
+			tmpDir, err := os.MkdirTemp("", "sticker-*")
+			if err != nil {
+				sendText(cli, chatBare, "❌ Não consegui criar pasta temporária: "+err.Error())
+				return
+			}
+			defer os.RemoveAll(tmpDir)
+
+			var (
+				stickerPath string
+				isAnimated  bool
+			)
+
+			switch {
+			case qm.GetImageMessage() != nil:
+				img := qm.GetImageMessage()
+				data, err := cli.Download(context.Background(), img)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Falha ao baixar a imagem: "+err.Error())
+					return
+				}
+				ext := ".img"
+				if mt := img.GetMimetype(); mt != "" {
+					if exts, _ := mime.ExtensionsByType(mt); len(exts) > 0 {
+						ext = exts[0]
+					}
+				}
+				inputPath := path.Join(tmpDir, "quoted"+ext)
+				if err := os.WriteFile(inputPath, data, 0600); err != nil {
+					sendText(cli, chatBare, "❌ Falha ao salvar a imagem: "+err.Error())
+					return
+				}
+				stickerPath, err = convertImageToStickerWebP(inputPath)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Erro ao converter figurinha: "+err.Error())
+					return
+				}
+			case qm.GetVideoMessage() != nil:
+				vid := qm.GetVideoMessage()
+				data, err := cli.Download(context.Background(), vid)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Falha ao baixar o vídeo: "+err.Error())
+					return
+				}
+				ext := ".mp4"
+				if mt := vid.GetMimetype(); mt != "" {
+					if exts, _ := mime.ExtensionsByType(mt); len(exts) > 0 {
+						ext = exts[0]
+					}
+				}
+				inputPath := path.Join(tmpDir, "quoted"+ext)
+				if err := os.WriteFile(inputPath, data, 0600); err != nil {
+					sendText(cli, chatBare, "❌ Falha ao salvar o vídeo: "+err.Error())
+					return
+				}
+				stickerPath, err = convertVideoToStickerWebP(inputPath)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Erro ao converter figurinha animada: "+err.Error())
+					return
+				}
+				isAnimated = true
+			default:
+				sendText(cli, chatBare, "❌ Responda a uma imagem ou vídeo curto para usar !sticker.")
+				return
+			}
+
+			stickerBytes, err := os.ReadFile(stickerPath)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Não consegui ler a figurinha: "+err.Error())
+				return
+			}
+			up, err := cli.Upload(context.Background(), stickerBytes, whatsmeow.MediaImage)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Erro no upload da figurinha: "+err.Error())
+				return
+			}
+			jid, err := types.ParseJID(chatBare)
+			if err != nil {
+				log.Printf("⚠️ JID inválido: %v", err)
+				return
+			}
+			stickerMsg := &waProto.StickerMessage{
+				Mimetype:      proto.String("image/webp"),
+				URL:           proto.String(up.URL),
+				DirectPath:    proto.String(up.DirectPath),
+				MediaKey:      up.MediaKey,
+				FileEncSHA256: up.FileEncSHA256,
+				FileSHA256:    up.FileSHA256,
+				FileLength:    proto.Uint64(up.FileLength),
+				Height:        proto.Uint32(512),
+				Width:         proto.Uint32(512),
+			}
+			if isAnimated {
+				stickerMsg.IsAnimated = proto.Bool(true)
+			}
+			if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{StickerMessage: stickerMsg}); err != nil {
+				sendText(cli, chatBare, "❌ Falha ao enviar figurinha: "+err.Error())
+			} else {
+				log.Printf("✅ Figurinha enviada para %s", chatBare)
 			}
 			return
 		}

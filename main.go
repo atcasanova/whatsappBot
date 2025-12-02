@@ -59,6 +59,10 @@ var (
 	contactNames   = make(map[string]string)
 )
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
 // helpers de contexto
 type void struct{}
 
@@ -110,10 +114,14 @@ func bareJID(full string) string {
 	return local + "@" + parts[1]
 }
 
+var keepAlivePresences = []types.Presence{
+	types.PresenceAvailable,
+	types.PresenceUnavailable,
+}
+
 func sendKeepAlive(cli *whatsmeow.Client) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return cli.SendPresence(ctx, types.PresenceAvailable)
+	presence := keepAlivePresences[rand.Intn(len(keepAlivePresences))]
+	return cli.SendPresence(presence)
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {

@@ -119,9 +119,9 @@ var keepAlivePresences = []types.Presence{
 	types.PresenceUnavailable,
 }
 
-func sendKeepAlive(cli *whatsmeow.Client) error {
+func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
 	presence := keepAlivePresences[rand.Intn(len(keepAlivePresences))]
-	return cli.SendPresence(presence)
+	return cli.SendPresence(ctx, presence)
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {
@@ -154,7 +154,7 @@ func startKeepAliveLoop(cli *whatsmeow.Client) {
 			}
 			time.Sleep(interval)
 
-			if err := sendKeepAlive(cli); err != nil {
+			if err := sendKeepAlive(context.Background(), cli); err != nil {
 				log.Printf("⚠️ keep-alive falhou: %v", err)
 				backoff = time.Duration(math.Min(float64(backoff*2), float64(maxInterval)))
 				continue
@@ -639,7 +639,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		}
 		logTriggerEvaluation(commandName, chatBare, senderBare, senderFull, body, infoIsFromMe)
 		go func() {
-			if err := sendKeepAlive(cli); err != nil {
+			if err := sendKeepAlive(context.Background(), cli); err != nil {
 				log.Printf("⚠️ keep-alive falhou ao detectar trigger: %v", err)
 			}
 		}()

@@ -275,7 +275,7 @@ func extractVideoURL(text string) string {
 func cookieArgsForURL(url string) []string {
 	cookiePath := ""
 	switch {
-	case strings.Contains(url, "instagram.com") || strings.Contains(url, "threads.net") || strings.Contains(url, "threads.com"):
+	case strings.Contains(url, "instagram.com") || strings.Contains(url, "threads.net"):
 		cookiePath = instaCookies
 	case strings.Contains(url, "tiktok.com"):
 		cookiePath = tiktokCookies

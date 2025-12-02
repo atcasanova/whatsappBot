@@ -8,7 +8,11 @@ RUN apk add --no-cache \
       python3 \
       py3-pip
 
-RUN pip install --no-cache-dir --upgrade yt-dlp
+# Use an isolated virtual environment to install yt-dlp and avoid PEP 668
+# externally-managed-environment errors during image build.
+RUN python3 -m venv /venv \
+    && /venv/bin/pip install --no-cache-dir --upgrade yt-dlp \
+    && ln -s /venv/bin/yt-dlp /usr/local/bin/yt-dlp
 ENV TZ=America/Sao_Paulo
 
 WORKDIR /app

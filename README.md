@@ -7,7 +7,7 @@ Este repositório traz um bot de WhatsApp escrito em Go, usando [WhatsMeow](http
 ## 📋 Pré-requisitos
 
 1. **Docker & Docker Compose**  
-2. **Go ≥ 1.23** (opcional, apenas se quiser validar ou compilar localmente)  
+2. **Go ≥ 1.23** (opcional, apenas se quiser validar ou compilar localmente)
 3. Variáveis de ambiente:
    - `OPENAI_API_KEY` – sua chave da OpenAI  
    - `USER_PHONE` – seu número no formato internacional (ex.: `5561999999999`)  
@@ -16,8 +16,8 @@ Este repositório traz um bot de WhatsApp escrito em Go, usando [WhatsMeow](http
    - `CHATGPT_PROMPT` – prompt base para `!chatgpt`  
    - `MODEL` – modelo inicial (ex.: `gpt-4o-mini`)
    - `TZ` – fuso horário (ex.: `America/Sao_Paulo`)
-   - `INSTA_COOKIES_PATH` – caminho para o arquivo de cookies do Instagram (opcional).
-     Monte o arquivo no container e informe o caminho aqui para que o `yt-dlp` consiga autenticar.
+- `INSTA_COOKIES_PATH` – caminho para o arquivo de cookies do Instagram/Threads (opcional).
+  Monte o arquivo no container e informe o caminho aqui para que o `yt-dlp` consiga autenticar, inclusive para links do threads.com.
    - `TIKTOK_COOKIES_PATH` – arquivo de cookies do TikTok (opcional, uso similar ao do Instagram).
 
 ---
@@ -113,6 +113,6 @@ docker-compose up --build -d
 ├── main.go
 └── README.md
 ```
-* Dockerfile: instala Go 1.23, habilita cgo, configura timezone e compila o binário.
+* Dockerfile: instala Go 1.23, habilita cgo, instala o `yt-dlp` atualizado via `pip`, configura timezone e compila o binário.
 * docker-compose.yml: monta volumes para sessão e arquivos de áudio.
 * main.go: toda a lógica do bot e handlers de eventos.

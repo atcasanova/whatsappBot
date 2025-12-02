@@ -5,7 +5,10 @@ RUN apk add --no-cache \
       build-base \
       sqlite-dev \
       tzdata \
-      yt-dlp
+      python3 \
+      py3-pip
+
+RUN pip install --no-cache-dir --upgrade yt-dlp
 ENV TZ=America/Sao_Paulo
 
 WORKDIR /app

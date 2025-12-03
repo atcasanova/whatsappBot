@@ -239,6 +239,29 @@ func convertVideoToMP4(inputPath string) (string, error) {
 	return outputPath, nil
 }
 
+func videoDurationSeconds(inputPath string) (float64, error) {
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(out) > 0 {
+			log.Printf("ffprobe output: %s", string(out))
+		}
+		return 0, fmt.Errorf("falha ao ler duração do vídeo: %w", err)
+	}
+
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("falha ao converter duração do vídeo: %w", err)
+	}
+	return duration, nil
+}
+
 func convertImageToStickerWebP(inputPath string) (string, error) {
 	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_sticker.webp"
 	qualityAttempts := []int{80, 70, 60, 50}
@@ -284,6 +307,17 @@ func convertImageToStickerWebP(inputPath string) (string, error) {
 
 func convertVideoToStickerWebP(inputPath string) (string, error) {
 	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_sticker.webp"
+	duration, err := videoDurationSeconds(inputPath)
+	if err != nil {
+		return "", err
+	}
+
+	const maxDuration = 6.0
+	if duration > maxDuration {
+		duration = maxDuration
+	}
+	const minDuration = 0.5
+
 	attempts := []struct {
 		fps     int
 		quality int
@@ -295,40 +329,59 @@ func convertVideoToStickerWebP(inputPath string) (string, error) {
 	}
 
 	for i, attempt := range attempts {
-		args := []string{
-			"-y",
-			"-i", inputPath,
-			"-t", "6",
-			"-vf", fmt.Sprintf("scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,fps=%d,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000", attempt.fps),
-			"-loop", "0",
-			"-an",
-			"-vsync", "0",
-			"-c:v", "libwebp",
-			"-quality", strconv.Itoa(attempt.quality),
-			"-compression_level", "6",
-			"-q:v", strconv.Itoa(attempt.qv),
-			"-preset", "picture",
-			outputPath,
-		}
-		log.Printf("🎞️ ffmpeg %v", args)
-		cmd := exec.Command("ffmpeg", args...)
-		out, err := cmd.CombinedOutput()
-		if len(out) > 0 {
-			log.Printf("ffmpeg output: %s", string(out))
-		}
-		if err != nil {
-			return "", fmt.Errorf("ffmpeg falhou: %w", err)
+		attemptDuration := duration
+
+		for {
+			args := []string{
+				"-y",
+				"-i", inputPath,
+				"-t", fmt.Sprintf("%.2f", attemptDuration),
+				"-vf", fmt.Sprintf("scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,fps=%d,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000", attempt.fps),
+				"-loop", "0",
+				"-an",
+				"-vsync", "0",
+				"-c:v", "libwebp",
+				"-quality", strconv.Itoa(attempt.quality),
+				"-compression_level", "6",
+				"-q:v", strconv.Itoa(attempt.qv),
+				"-preset", "picture",
+				outputPath,
+			}
+			log.Printf("🎞️ ffmpeg %v", args)
+			cmd := exec.Command("ffmpeg", args...)
+			out, err := cmd.CombinedOutput()
+			if len(out) > 0 {
+				log.Printf("ffmpeg output: %s", string(out))
+			}
+			if err != nil {
+				return "", fmt.Errorf("ffmpeg falhou: %w", err)
+			}
+
+			size, err := fileSize(outputPath)
+			if err != nil {
+				return "", fmt.Errorf("falha ao ler figurinha animada: %w", err)
+			}
+			if size <= maxStickerSizeBytes {
+				return outputPath, nil
+			}
+
+			ratio := float64(maxStickerSizeBytes) / float64(size)
+			newDuration := attemptDuration * ratio
+			if newDuration < minDuration {
+				log.Printf("⚠️ figurinha animada ficou com %.0f KB; duração mínima atingida (%.2fs)", float64(size)/1024, minDuration)
+				break
+			}
+			if newDuration >= attemptDuration*0.95 {
+				log.Printf("⚠️ figurinha animada ficou com %.0f KB; redução proporcional de duração seria mínima (%.2fs)", float64(size)/1024, newDuration)
+				break
+			}
+
+			log.Printf("⚠️ figurinha animada ficou com %.0f KB; reduzindo duração para %.2fs e tentando novamente", float64(size)/1024, newDuration)
+			attemptDuration = newDuration
 		}
 
-		size, err := fileSize(outputPath)
-		if err != nil {
-			return "", fmt.Errorf("falha ao ler figurinha animada: %w", err)
-		}
-		if size <= maxStickerSizeBytes {
-			return outputPath, nil
-		}
 		if i < len(attempts)-1 {
-			log.Printf("⚠️ figurinha animada ficou com %.0f KB; tentando configuração mais leve (fps %d)", float64(size)/1024, attempts[i+1].fps)
+			log.Printf("⚠️ figurinha animada ainda acima do limite; tentando configuração mais leve (fps %d)", attempts[i+1].fps)
 		}
 	}
 

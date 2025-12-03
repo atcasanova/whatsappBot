@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -34,7 +35,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const summaryMarker = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
+const (
+	summaryMarker       = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
+	maxStickerSizeBytes = 900 * 1024 // keep stickers safely under WhatsApp's 1MB limit
+)
 
 // Msg representa uma mensagem armazenada, possivelmente com quote
 type Msg struct {
@@ -179,88 +183,156 @@ func normalizePhone(phone string) string {
 
 var reVideoURL = regexp.MustCompile(`https?://[^\s]+`)
 
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 func convertVideoToMP4(inputPath string) (string, error) {
 	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_converted.mp4"
-	args := []string{
-		"-y",
-		"-i", inputPath,
-		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", "23",
-		"-movflags", "+faststart",
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "128k",
-		outputPath,
-	}
-	log.Printf("🎬 ffmpeg %v", args)
-	cmd := exec.Command("ffmpeg", args...)
-	out, err := cmd.CombinedOutput()
-	if len(out) > 0 {
-		log.Printf("ffmpeg output: %s", string(out))
-	}
+	origSize, err := fileSize(inputPath)
 	if err != nil {
-		return "", fmt.Errorf("ffmpeg falhou: %w", err)
+		return "", fmt.Errorf("falha ao obter tamanho do vídeo: %w", err)
 	}
+
+	crfAttempts := []int{23, 28, 32}
+	for i, crf := range crfAttempts {
+		args := []string{
+			"-y",
+			"-i", inputPath,
+			"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+			"-c:v", "libx264",
+			"-preset", "medium",
+			"-crf", strconv.Itoa(crf),
+			"-movflags", "+faststart",
+			"-pix_fmt", "yuv420p",
+			"-c:a", "aac",
+			"-b:a", "96k",
+			outputPath,
+		}
+		log.Printf("🎬 ffmpeg %v", args)
+		cmd := exec.Command("ffmpeg", args...)
+		out, err := cmd.CombinedOutput()
+		if len(out) > 0 {
+			log.Printf("ffmpeg output: %s", string(out))
+		}
+		if err != nil {
+			return "", fmt.Errorf("ffmpeg falhou: %w", err)
+		}
+
+		convertedSize, err := fileSize(outputPath)
+		if err != nil {
+			return "", fmt.Errorf("falha ao ler vídeo convertido: %w", err)
+		}
+		if convertedSize <= origSize {
+			return outputPath, nil
+		}
+		if i < len(crfAttempts)-1 {
+			log.Printf("⚠️ vídeo convertido ficou maior (%.2f MB > %.2f MB); tentando CRF %d", float64(convertedSize)/(1024*1024), float64(origSize)/(1024*1024), crfAttempts[i+1])
+		}
+	}
+
+	log.Printf("⚠️ não consegui reduzir %s abaixo do tamanho original, enviando com o menor tamanho obtido", outputPath)
 	return outputPath, nil
 }
 
 func convertImageToStickerWebP(inputPath string) (string, error) {
 	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_sticker.webp"
-	args := []string{
-		"-y",
-		"-i", inputPath,
-		"-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000",
-		"-vcodec", "libwebp",
-		"-lossless", "1",
-		"-compression_level", "6",
-		"-q:v", "70",
-		"-preset", "picture",
-		"-an",
-		"-vsync", "0",
-		"-frames:v", "1",
-		outputPath,
+	qualityAttempts := []int{80, 70, 60, 50}
+	for i, q := range qualityAttempts {
+		args := []string{
+			"-y",
+			"-i", inputPath,
+			"-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000",
+			"-vcodec", "libwebp",
+			"-lossless", "0",
+			"-compression_level", "6",
+			"-q:v", strconv.Itoa(q),
+			"-preset", "picture",
+			"-an",
+			"-vsync", "0",
+			"-frames:v", "1",
+			outputPath,
+		}
+		log.Printf("🎨 ffmpeg %v", args)
+		cmd := exec.Command("ffmpeg", args...)
+		out, err := cmd.CombinedOutput()
+		if len(out) > 0 {
+			log.Printf("ffmpeg output: %s", string(out))
+		}
+		if err != nil {
+			return "", fmt.Errorf("ffmpeg falhou: %w", err)
+		}
+
+		size, err := fileSize(outputPath)
+		if err != nil {
+			return "", fmt.Errorf("falha ao ler figurinha: %w", err)
+		}
+		if size <= maxStickerSizeBytes {
+			return outputPath, nil
+		}
+		if i < len(qualityAttempts)-1 {
+			log.Printf("⚠️ figurinha ficou com %.0f KB; reduzindo qualidade para %d", float64(size)/1024, qualityAttempts[i+1])
+		}
 	}
-	log.Printf("🎨 ffmpeg %v", args)
-	cmd := exec.Command("ffmpeg", args...)
-	out, err := cmd.CombinedOutput()
-	if len(out) > 0 {
-		log.Printf("ffmpeg output: %s", string(out))
-	}
-	if err != nil {
-		return "", fmt.Errorf("ffmpeg falhou: %w", err)
-	}
-	return outputPath, nil
+
+	return "", fmt.Errorf("figurinha ficou maior que o limite de %d KB", maxStickerSizeBytes/1024)
 }
 
 func convertVideoToStickerWebP(inputPath string) (string, error) {
 	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_sticker.webp"
-	args := []string{
-		"-y",
-		"-i", inputPath,
-		"-t", "6",
-		"-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,fps=15,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000",
-		"-loop", "0",
-		"-an",
-		"-vsync", "0",
-		"-c:v", "libwebp",
-		"-quality", "80",
-		"-compression_level", "6",
-		"-q:v", "70",
-		"-preset", "picture",
-		outputPath,
+	attempts := []struct {
+		fps     int
+		quality int
+		qv      int
+	}{
+		{fps: 15, quality: 75, qv: 65},
+		{fps: 12, quality: 70, qv: 60},
+		{fps: 10, quality: 65, qv: 55},
 	}
-	log.Printf("🎞️ ffmpeg %v", args)
-	cmd := exec.Command("ffmpeg", args...)
-	out, err := cmd.CombinedOutput()
-	if len(out) > 0 {
-		log.Printf("ffmpeg output: %s", string(out))
+
+	for i, attempt := range attempts {
+		args := []string{
+			"-y",
+			"-i", inputPath,
+			"-t", "6",
+			"-vf", fmt.Sprintf("scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,fps=%d,format=rgba,pad=512:512:(512-iw)/2:(512-ih)/2:color=0x00000000", attempt.fps),
+			"-loop", "0",
+			"-an",
+			"-vsync", "0",
+			"-c:v", "libwebp",
+			"-quality", strconv.Itoa(attempt.quality),
+			"-compression_level", "6",
+			"-q:v", strconv.Itoa(attempt.qv),
+			"-preset", "picture",
+			outputPath,
+		}
+		log.Printf("🎞️ ffmpeg %v", args)
+		cmd := exec.Command("ffmpeg", args...)
+		out, err := cmd.CombinedOutput()
+		if len(out) > 0 {
+			log.Printf("ffmpeg output: %s", string(out))
+		}
+		if err != nil {
+			return "", fmt.Errorf("ffmpeg falhou: %w", err)
+		}
+
+		size, err := fileSize(outputPath)
+		if err != nil {
+			return "", fmt.Errorf("falha ao ler figurinha animada: %w", err)
+		}
+		if size <= maxStickerSizeBytes {
+			return outputPath, nil
+		}
+		if i < len(attempts)-1 {
+			log.Printf("⚠️ figurinha animada ficou com %.0f KB; tentando configuração mais leve (fps %d)", float64(size)/1024, attempts[i+1].fps)
+		}
 	}
-	if err != nil {
-		return "", fmt.Errorf("ffmpeg falhou: %w", err)
-	}
-	return outputPath, nil
+
+	return "", fmt.Errorf("figurinha animada ficou maior que o limite de %d KB", maxStickerSizeBytes/1024)
 }
 
 func extractVideoURL(text string) string {

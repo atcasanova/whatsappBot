@@ -140,6 +140,13 @@ func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float
 	return base + offset
 }
 
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func triggerKeepAlive(cli *whatsmeow.Client) {
 	const minInterval = 5 * time.Minute
 	if time.Since(lastKeepAlive) < minInterval {
@@ -316,20 +323,23 @@ func convertVideoToStickerWebP(inputPath string) (string, error) {
 	if duration > maxDuration {
 		duration = maxDuration
 	}
-	const minDuration = 0.5
+	const minDuration = 0.8
 
 	attempts := []struct {
 		fps     int
 		quality int
 		qv      int
 	}{
-		{fps: 15, quality: 75, qv: 65},
-		{fps: 12, quality: 70, qv: 60},
-		{fps: 10, quality: 65, qv: 55},
+		{fps: 15, quality: 78, qv: 68},
+		{fps: 12, quality: 72, qv: 62},
+		{fps: 10, quality: 68, qv: 58},
 	}
 
 	for i, attempt := range attempts {
 		attemptDuration := duration
+		attemptQuality := attempt.quality
+		attemptQV := attempt.qv
+		qualityDrops := 0
 
 		for {
 			args := []string{
@@ -341,9 +351,9 @@ func convertVideoToStickerWebP(inputPath string) (string, error) {
 				"-an",
 				"-vsync", "0",
 				"-c:v", "libwebp",
-				"-quality", strconv.Itoa(attempt.quality),
+				"-quality", strconv.Itoa(attemptQuality),
 				"-compression_level", "6",
-				"-q:v", strconv.Itoa(attempt.qv),
+				"-q:v", strconv.Itoa(attemptQV),
 				"-preset", "picture",
 				outputPath,
 			}
@@ -365,19 +375,31 @@ func convertVideoToStickerWebP(inputPath string) (string, error) {
 				return outputPath, nil
 			}
 
+			if qualityDrops < 2 && attemptQuality > 50 {
+				qualityDrops++
+				attemptQuality = maxInt(attemptQuality-5, 50)
+				attemptQV = maxInt(attemptQV-5, 40)
+				log.Printf("⚠️ figurinha animada ficou com %.0f KB; reduzindo qualidade para q=%d qv=%d", float64(size)/1024, attemptQuality, attemptQV)
+				continue
+			}
+
 			ratio := float64(maxStickerSizeBytes) / float64(size)
-			newDuration := attemptDuration * ratio
-			if newDuration < minDuration {
+			reducedDuration := attemptDuration * ratio
+			minimalStep := attemptDuration * 0.8
+			if reducedDuration < minimalStep {
+				reducedDuration = minimalStep
+			}
+			if reducedDuration < minDuration {
 				log.Printf("⚠️ figurinha animada ficou com %.0f KB; duração mínima atingida (%.2fs)", float64(size)/1024, minDuration)
 				break
 			}
-			if newDuration >= attemptDuration*0.95 {
-				log.Printf("⚠️ figurinha animada ficou com %.0f KB; redução proporcional de duração seria mínima (%.2fs)", float64(size)/1024, newDuration)
+			if reducedDuration >= attemptDuration-0.05 {
+				log.Printf("⚠️ figurinha animada ficou com %.0f KB; redução proporcional de duração seria mínima (%.2fs)", float64(size)/1024, reducedDuration)
 				break
 			}
 
-			log.Printf("⚠️ figurinha animada ficou com %.0f KB; reduzindo duração para %.2fs e tentando novamente", float64(size)/1024, newDuration)
-			attemptDuration = newDuration
+			log.Printf("⚠️ figurinha animada ficou com %.0f KB; reduzindo duração para %.2fs (q=%d qv=%d fps=%d) e tentando novamente", float64(size)/1024, reducedDuration, attemptQuality, attemptQV, attempt.fps)
+			attemptDuration = reducedDuration
 		}
 
 		if i < len(attempts)-1 {

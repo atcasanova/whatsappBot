@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"math/rand"
 	"mime"
 	"net/http"
@@ -24,7 +23,10 @@ import (
 	go_openai "github.com/sashabaranov/go-openai"
 
 	"go.mau.fi/whatsmeow"
+	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
+	waWa6 "go.mau.fi/whatsmeow/proto/waWa6"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -57,6 +59,7 @@ var (
 	messageHistory = make(map[string][]Msg)
 	currentDay     = time.Now().Day()
 	contactNames   = make(map[string]string)
+	lastKeepAlive  time.Time
 )
 
 func init() {
@@ -114,14 +117,8 @@ func bareJID(full string) string {
 	return local + "@" + parts[1]
 }
 
-var keepAlivePresences = []types.Presence{
-	types.PresenceAvailable,
-	types.PresenceUnavailable,
-}
-
 func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
-	presence := keepAlivePresences[rand.Intn(len(keepAlivePresences))]
-	return cli.SendPresence(ctx, presence)
+	return cli.SendPresence(ctx, types.PresenceUnavailable)
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {
@@ -139,30 +136,29 @@ func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float
 	return base + offset
 }
 
-func startKeepAliveLoop(cli *whatsmeow.Client) {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	const minInterval = 6 * time.Hour
-	const maxInterval = 48 * time.Hour
-	const jitterFraction = 0.10
-	backoff := minInterval
+func triggerKeepAlive(cli *whatsmeow.Client) {
+	const minInterval = 5 * time.Minute
+	if time.Since(lastKeepAlive) < minInterval {
+		return
+	}
+	lastKeepAlive = time.Now()
 
 	go func() {
-		for {
-			interval := jitteredInterval(r, minInterval, maxInterval, jitterFraction)
-			if backoff > interval {
-				interval = backoff
-			}
-			time.Sleep(interval)
-
-			if err := sendKeepAlive(context.Background(), cli); err != nil {
-				log.Printf("⚠️ keep-alive falhou: %v", err)
-				backoff = time.Duration(math.Min(float64(backoff*2), float64(maxInterval)))
-				continue
-			}
-
-			backoff = minInterval
+		if err := sendKeepAlive(context.Background(), cli); err != nil {
+			log.Printf("⚠️ keep-alive falhou: %v", err)
 		}
 	}()
+}
+
+func configureClientIdentity() {
+	store.SetOSInfo("Mac OS", [3]uint32{14, 0, 0})
+	store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_CHROME.Enum()
+
+	ua := store.BaseClientPayload.UserAgent
+	ua.Platform = waWa6.ClientPayload_UserAgent_MACOS.Enum()
+	ua.DeviceType = waWa6.ClientPayload_UserAgent_DESKTOP.Enum()
+	ua.Manufacturer = proto.String("Apple")
+	ua.Device = proto.String("Chrome on macOS")
 }
 
 func mustEnv(key, fallback string) string {
@@ -547,6 +543,8 @@ func init() {
 		}
 	}
 
+	configureClientIdentity()
+
 	dbLog := waLog.Stdout("DB", "ERROR", true)
 	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", sessionPath)
 	ctx := context.Background()
@@ -571,7 +569,6 @@ func init() {
 	if err := client.Connect(); err != nil {
 		log.Fatalf("falha ao conectar: %v", err)
 	}
-	startKeepAliveLoop(client)
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.LoggedOut:
@@ -638,11 +635,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			commandName = trimmedBody[:idx]
 		}
 		logTriggerEvaluation(commandName, chatBare, senderBare, senderFull, body, infoIsFromMe)
-		go func() {
-			if err := sendKeepAlive(context.Background(), cli); err != nil {
-				log.Printf("⚠️ keep-alive falhou ao detectar trigger: %v", err)
-			}
-		}()
+		triggerKeepAlive(cli)
 	}
 
 	// reset diário

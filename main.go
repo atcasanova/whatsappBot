@@ -63,7 +63,6 @@ var (
 	messageHistory = make(map[string][]Msg)
 	currentDay     = time.Now().Day()
 	contactNames   = make(map[string]string)
-	lastKeepAlive  time.Time
 )
 
 func init() {
@@ -122,7 +121,24 @@ func bareJID(full string) string {
 }
 
 func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
-	return cli.SendPresence(ctx, types.PresenceUnavailable)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if err := cli.SendPresence(ctx, types.PresenceAvailable); err != nil {
+		return fmt.Errorf("presence available: %w", err)
+	}
+
+	select {
+	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	if err := cli.SendPresence(ctx, types.PresenceUnavailable); err != nil {
+		return fmt.Errorf("presence unavailable: %w", err)
+	}
+
+	return nil
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {
@@ -148,12 +164,6 @@ func maxInt(a, b int) int {
 }
 
 func triggerKeepAlive(cli *whatsmeow.Client) {
-	const minInterval = 5 * time.Minute
-	if time.Since(lastKeepAlive) < minInterval {
-		return
-	}
-	lastKeepAlive = time.Now()
-
 	go func() {
 		if err := sendKeepAlive(context.Background(), cli); err != nil {
 			log.Printf("⚠️ keep-alive falhou: %v", err)

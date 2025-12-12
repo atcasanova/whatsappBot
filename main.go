@@ -210,13 +210,9 @@ func fileSize(path string) (int64, error) {
 
 func convertVideoToMP4(inputPath string) (string, error) {
 	outputPath := strings.TrimSuffix(inputPath, path.Ext(inputPath)) + "_converted.mp4"
-	origSize, err := fileSize(inputPath)
-	if err != nil {
-		return "", fmt.Errorf("falha ao obter tamanho do vídeo: %w", err)
-	}
+	const maxVideoSizeBytes = 50 * 1024 * 1024
 
-	crfAttempts := []int{23, 28, 32}
-	for i, crf := range crfAttempts {
+	convertWithCRF := func(crf int) (int64, error) {
 		args := []string{
 			"-y",
 			"-i", inputPath,
@@ -237,22 +233,39 @@ func convertVideoToMP4(inputPath string) (string, error) {
 			log.Printf("ffmpeg output: %s", string(out))
 		}
 		if err != nil {
-			return "", fmt.Errorf("ffmpeg falhou: %w", err)
+			return 0, fmt.Errorf("ffmpeg falhou: %w", err)
 		}
 
-		convertedSize, err := fileSize(outputPath)
+		return fileSize(outputPath)
+	}
+
+	crfAttempts := []int{23, 28, 32}
+	convertedSize, err := convertWithCRF(crfAttempts[0])
+	if err != nil {
+		return "", err
+	}
+
+	if convertedSize <= maxVideoSizeBytes {
+		return outputPath, nil
+	}
+
+	log.Printf("⚠️ vídeo com %.2f MB após CRF %d; tentando reduzir para abaixo de 50 MB", float64(convertedSize)/(1024*1024), crfAttempts[0])
+
+	for i, crf := range crfAttempts[1:] {
+		convertedSize, err = convertWithCRF(crf)
 		if err != nil {
-			return "", fmt.Errorf("falha ao ler vídeo convertido: %w", err)
+			return "", err
 		}
-		if convertedSize <= origSize {
+
+		if convertedSize <= maxVideoSizeBytes {
 			return outputPath, nil
 		}
-		if i < len(crfAttempts)-1 {
-			log.Printf("⚠️ vídeo convertido ficou maior (%.2f MB > %.2f MB); tentando CRF %d", float64(convertedSize)/(1024*1024), float64(origSize)/(1024*1024), crfAttempts[i+1])
+		if i < len(crfAttempts)-2 {
+			log.Printf("⚠️ vídeo ainda com %.2f MB; tentando CRF %d", float64(convertedSize)/(1024*1024), crfAttempts[i+2])
 		}
 	}
 
-	log.Printf("⚠️ não consegui reduzir %s abaixo do tamanho original, enviando com o menor tamanho obtido", outputPath)
+	log.Printf("⚠️ não consegui reduzir %s abaixo de 50 MB, enviando com o menor tamanho obtido", outputPath)
 	return outputPath, nil
 }
 

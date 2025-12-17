@@ -916,6 +916,106 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			return
 
 		}
+		if strings.HasPrefix(body, "!edit") {
+			log.Println("✅ Disparou !edit")
+			ext := v.Message.GetExtendedTextMessage()
+			if ext == nil || ext.GetContextInfo() == nil || ext.GetContextInfo().GetQuotedMessage() == nil || ext.GetContextInfo().GetQuotedMessage().GetImageMessage() == nil {
+				sendText(cli, chatBare, "❌ Responda a uma imagem para usar !edit.")
+				return
+			}
+			prompt := strings.TrimSpace(body[len("!edit"):])
+			if prompt == "" {
+				sendText(cli, chatBare, "❌ Informe o prompt após !edit.")
+				return
+			}
+			ctxInfo := ext.GetContextInfo()
+			qm := ctxInfo.GetQuotedMessage()
+			img := qm.GetImageMessage()
+			imgBytes, err := cli.Download(context.Background(), img)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Falha ao baixar a imagem: "+err.Error())
+				return
+			}
+
+			extImg := ".png"
+			if mt := img.GetMimetype(); mt != "" {
+				if exts, _ := mime.ExtensionsByType(mt); len(exts) > 0 {
+					extImg = exts[0]
+				}
+			}
+			tmpFile, err := os.CreateTemp("", "edit-*"+extImg)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Não consegui criar arquivo temporário: "+err.Error())
+				return
+			}
+			if _, err := tmpFile.Write(imgBytes); err != nil {
+				tmpFile.Close()
+				sendText(cli, chatBare, "❌ Falha ao salvar a imagem: "+err.Error())
+				return
+			}
+			if _, err := tmpFile.Seek(0, 0); err != nil {
+				tmpFile.Close()
+				sendText(cli, chatBare, "❌ Falha ao preparar a imagem: "+err.Error())
+				return
+			}
+			defer func() {
+				name := tmpFile.Name()
+				tmpFile.Close()
+				os.Remove(name)
+			}()
+
+			respImg, err := openaiClient.CreateEditImage(
+				context.Background(),
+				go_openai.ImageEditRequest{
+					Image:          tmpFile,
+					Prompt:         prompt,
+					Model:          "gpt-image-1.5",
+					Quality:        "low",
+					N:              1,
+					Size:           go_openai.CreateImageSize1024x1024,
+					ResponseFormat: go_openai.CreateImageResponseFormatB64JSON,
+				},
+			)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Erro ao editar imagem: "+err.Error())
+				return
+			}
+			if len(respImg.Data) == 0 || respImg.Data[0].B64JSON == "" {
+				sendText(cli, chatBare, "❌ Resposta da API sem imagem editada")
+				return
+			}
+			editedBytes, err := base64.StdEncoding.DecodeString(respImg.Data[0].B64JSON)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Não consegui decodificar a imagem editada: "+err.Error())
+				return
+			}
+
+			up, err := cli.Upload(context.Background(), editedBytes, whatsmeow.MediaImage)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Erro no upload da imagem editada: "+err.Error())
+				return
+			}
+			jid, err := types.ParseJID(chatBare)
+			if err != nil {
+				log.Printf("⚠️ JID inválido: %v", err)
+				return
+			}
+			imageMsg := &waProto.ImageMessage{
+				Caption:       proto.String(prompt),
+				Mimetype:      proto.String("image/png"),
+				URL:           proto.String(up.URL),
+				DirectPath:    proto.String(up.DirectPath),
+				MediaKey:      up.MediaKey,
+				FileEncSHA256: up.FileEncSHA256,
+				FileSHA256:    up.FileSHA256,
+				FileLength:    proto.Uint64(up.FileLength),
+			}
+			if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imageMsg}); err != nil {
+				log.Printf("❌ falha ao enviar imagem editada: %v", err)
+			}
+			return
+
+		}
 		// !img
 		if strings.HasPrefix(body, "!img ") {
 			prompt := strings.TrimSpace(body[len("!img "):])

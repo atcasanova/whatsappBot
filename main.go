@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -13,7 +14,9 @@ import (
 	"log"
 	"math/rand"
 	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -146,6 +149,72 @@ func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
 	}
 
 	return nil
+}
+
+func createImageEdit(ctx context.Context, pngData []byte, prompt string) ([]byte, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	imageHeader := textproto.MIMEHeader{}
+	imageHeader.Set("Content-Disposition", `form-data; name="image"; filename="image.png"`)
+	imageHeader.Set("Content-Type", "image/png")
+
+	imgPart, err := writer.CreatePart(imageHeader)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao preparar parte da imagem: %w", err)
+	}
+	if _, err := imgPart.Write(pngData); err != nil {
+		return nil, fmt.Errorf("falha ao escrever imagem: %w", err)
+	}
+
+	fields := map[string]string{
+		"prompt":          prompt,
+		"model":           "gpt-image-1.5",
+		"n":               "1",
+		"size":            go_openai.CreateImageSize1024x1024,
+		"response_format": go_openai.CreateImageResponseFormatB64JSON,
+	}
+	for k, v := range fields {
+		if err := writer.WriteField(k, v); err != nil {
+			return nil, fmt.Errorf("falha ao escrever campo %s: %w", k, err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("falha ao finalizar multipart: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/images/edits", &body)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao criar requisição: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("OPENAI_API_KEY"))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao chamar API de edição: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("erro da API (%d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var imageResp go_openai.ImageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&imageResp); err != nil {
+		return nil, fmt.Errorf("falha ao decodificar resposta: %w", err)
+	}
+	if len(imageResp.Data) == 0 || imageResp.Data[0].B64JSON == "" {
+		return nil, fmt.Errorf("resposta sem imagem gerada")
+	}
+
+	editedBytes, err := base64.StdEncoding.DecodeString(imageResp.Data[0].B64JSON)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao decodificar imagem: %w", err)
+	}
+	return editedBytes, nil
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {
@@ -956,49 +1025,9 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				return
 			}
 
-			tmpFile, err := os.CreateTemp("", "edit-*.png")
-			if err != nil {
-				sendText(cli, chatBare, "❌ Não consegui criar arquivo temporário: "+err.Error())
-				return
-			}
-			if _, err := tmpFile.Write(pngBuffer.Bytes()); err != nil {
-				tmpFile.Close()
-				sendText(cli, chatBare, "❌ Falha ao salvar a imagem: "+err.Error())
-				return
-			}
-			if _, err := tmpFile.Seek(0, 0); err != nil {
-				tmpFile.Close()
-				sendText(cli, chatBare, "❌ Falha ao preparar a imagem: "+err.Error())
-				return
-			}
-			defer func() {
-				name := tmpFile.Name()
-				tmpFile.Close()
-				os.Remove(name)
-			}()
-
-			respImg, err := openaiClient.CreateEditImage(
-				context.Background(),
-				go_openai.ImageEditRequest{
-					Image:          tmpFile,
-					Prompt:         prompt,
-					Model:          "gpt-image-1.5",
-					N:              1,
-					Size:           go_openai.CreateImageSize1024x1024,
-					ResponseFormat: go_openai.CreateImageResponseFormatB64JSON,
-				},
-			)
+			editedBytes, err := createImageEdit(context.Background(), pngBuffer.Bytes(), prompt)
 			if err != nil {
 				sendText(cli, chatBare, "❌ Erro ao editar imagem: "+err.Error())
-				return
-			}
-			if len(respImg.Data) == 0 || respImg.Data[0].B64JSON == "" {
-				sendText(cli, chatBare, "❌ Resposta da API sem imagem editada")
-				return
-			}
-			editedBytes, err := base64.StdEncoding.DecodeString(respImg.Data[0].B64JSON)
-			if err != nil {
-				sendText(cli, chatBare, "❌ Não consegui decodificar a imagem editada: "+err.Error())
 				return
 			}
 

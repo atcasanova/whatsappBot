@@ -124,7 +124,7 @@ func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := cli.SendPresence(ctx, types.PresenceAvailable); err != nil {
+	if err := cli.SendPresence(types.PresenceAvailable); err != nil {
 		return fmt.Errorf("presence available: %w", err)
 	}
 
@@ -134,7 +134,7 @@ func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
 		return ctx.Err()
 	}
 
-	if err := cli.SendPresence(ctx, types.PresenceUnavailable); err != nil {
+	if err := cli.SendPresence(types.PresenceUnavailable); err != nil {
 		return fmt.Errorf("presence unavailable: %w", err)
 	}
 
@@ -970,7 +970,6 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					Image:          tmpFile,
 					Prompt:         prompt,
 					Model:          "gpt-image-1.5",
-					Quality:        "low",
 					N:              1,
 					Size:           go_openai.CreateImageSize1024x1024,
 					ResponseFormat: go_openai.CreateImageResponseFormatB64JSON,
@@ -1023,11 +1022,10 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			respImg, err := openaiClient.CreateImage(
 				context.Background(),
 				go_openai.ImageRequest{
-					Prompt:  prompt,
-					N:       1,
-					Size:    go_openai.CreateImageSize1024x1024,
-					Model:   "gpt-image-1.5",
-					Quality: "low",
+					Prompt: prompt,
+					N:      1,
+					Size:   go_openai.CreateImageSize1024x1024,
+					Model:  "gpt-image-1.5",
 				},
 			)
 			if err != nil {

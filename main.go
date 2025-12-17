@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"math/rand"
@@ -22,6 +27,8 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	go_openai "github.com/sashabaranov/go-openai"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
 
 	"go.mau.fi/whatsmeow"
 	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
@@ -937,18 +944,24 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				return
 			}
 
-			extImg := ".png"
-			if mt := img.GetMimetype(); mt != "" {
-				if exts, _ := mime.ExtensionsByType(mt); len(exts) > 0 {
-					extImg = exts[0]
-				}
+			imgDecoded, _, err := image.Decode(bytes.NewReader(imgBytes))
+			if err != nil {
+				sendText(cli, chatBare, "❌ Não consegui decodificar a imagem original: "+err.Error())
+				return
 			}
-			tmpFile, err := os.CreateTemp("", "edit-*"+extImg)
+
+			var pngBuffer bytes.Buffer
+			if err := png.Encode(&pngBuffer, imgDecoded); err != nil {
+				sendText(cli, chatBare, "❌ Não consegui converter a imagem para PNG: "+err.Error())
+				return
+			}
+
+			tmpFile, err := os.CreateTemp("", "edit-*.png")
 			if err != nil {
 				sendText(cli, chatBare, "❌ Não consegui criar arquivo temporário: "+err.Error())
 				return
 			}
-			if _, err := tmpFile.Write(imgBytes); err != nil {
+			if _, err := tmpFile.Write(pngBuffer.Bytes()); err != nil {
 				tmpFile.Close()
 				sendText(cli, chatBare, "❌ Falha ao salvar a imagem: "+err.Error())
 				return

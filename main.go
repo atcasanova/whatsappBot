@@ -124,7 +124,7 @@ func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := cli.SendPresence(types.PresenceAvailable); err != nil {
+	if err := cli.SendPresence(ctx, types.PresenceAvailable); err != nil {
 		return fmt.Errorf("presence available: %w", err)
 	}
 
@@ -134,7 +134,7 @@ func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
 		return ctx.Err()
 	}
 
-	if err := cli.SendPresence(types.PresenceUnavailable); err != nil {
+	if err := cli.SendPresence(ctx, types.PresenceUnavailable); err != nil {
 		return fmt.Errorf("presence unavailable: %w", err)
 	}
 

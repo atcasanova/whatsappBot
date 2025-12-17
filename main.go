@@ -168,11 +168,10 @@ func createImageEdit(ctx context.Context, pngData []byte, prompt string) ([]byte
 	}
 
 	fields := map[string]string{
-		"prompt":          prompt,
-		"model":           "gpt-image-1.5",
-		"n":               "1",
-		"size":            go_openai.CreateImageSize1024x1024,
-		"response_format": go_openai.CreateImageResponseFormatB64JSON,
+		"prompt": prompt,
+		"model":  "gpt-image-1.5",
+		"n":      "1",
+		"size":   go_openai.CreateImageSize1024x1024,
 	}
 	for k, v := range fields {
 		if err := writer.WriteField(k, v); err != nil {
@@ -206,15 +205,37 @@ func createImageEdit(ctx context.Context, pngData []byte, prompt string) ([]byte
 	if err := json.NewDecoder(resp.Body).Decode(&imageResp); err != nil {
 		return nil, fmt.Errorf("falha ao decodificar resposta: %w", err)
 	}
-	if len(imageResp.Data) == 0 || imageResp.Data[0].B64JSON == "" {
+	if len(imageResp.Data) == 0 {
 		return nil, fmt.Errorf("resposta sem imagem gerada")
 	}
 
-	editedBytes, err := base64.StdEncoding.DecodeString(imageResp.Data[0].B64JSON)
-	if err != nil {
-		return nil, fmt.Errorf("falha ao decodificar imagem: %w", err)
+	data := imageResp.Data[0]
+	if data.B64JSON != "" {
+		editedBytes, err := base64.StdEncoding.DecodeString(data.B64JSON)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao decodificar imagem: %w", err)
+		}
+		return editedBytes, nil
 	}
-	return editedBytes, nil
+
+	if data.URL != "" {
+		imgReq, err := http.NewRequestWithContext(ctx, http.MethodGet, data.URL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao criar requisição de download: %w", err)
+		}
+		imgResp, err := http.DefaultClient.Do(imgReq)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao baixar imagem: %w", err)
+		}
+		defer imgResp.Body.Close()
+		if imgResp.StatusCode < 200 || imgResp.StatusCode >= 300 {
+			bodyBytes, _ := io.ReadAll(imgResp.Body)
+			return nil, fmt.Errorf("download da imagem retornou %d: %s", imgResp.StatusCode, string(bodyBytes))
+		}
+		return io.ReadAll(imgResp.Body)
+	}
+
+	return nil, fmt.Errorf("resposta sem dados de imagem")
 }
 
 func jitteredInterval(r *rand.Rand, min, max time.Duration, jitterFraction float64) time.Duration {

@@ -171,7 +171,9 @@ func createImageEdit(ctx context.Context, pngData []byte, prompt string) ([]byte
 		"prompt": prompt,
 		"model":  "gpt-image-1.5",
 		"n":      "1",
-		"size":   go_openai.CreateImageSize1024x1024,
+	}
+	if size := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_SIZE")); size != "" {
+		fields["size"] = size
 	}
 	for k, v := range fields {
 		if err := writer.WriteField(k, v); err != nil {
@@ -1082,15 +1084,15 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		if strings.HasPrefix(body, "!img ") {
 			prompt := strings.TrimSpace(body[len("!img "):])
 			log.Printf("🖼️ Gerando imagem para: %q", prompt)
-			respImg, err := openaiClient.CreateImage(
-				context.Background(),
-				go_openai.ImageRequest{
-					Prompt: prompt,
-					N:      1,
-					Size:   go_openai.CreateImageSize1024x1024,
-					Model:  "gpt-image-1.5",
-				},
-			)
+			req := go_openai.ImageRequest{
+				Prompt: prompt,
+				N:      1,
+				Model:  "gpt-image-1.5",
+			}
+			if size := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_SIZE")); size != "" {
+				req.Size = size
+			}
+			respImg, err := openaiClient.CreateImage(context.Background(), req)
 			if err != nil {
 				sendText(cli, chatBare, "❌ Erro ao gerar imagem: "+err.Error())
 				return

@@ -592,6 +592,7 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 	attempts := []downloadAttempt{
 		{name: "proxy sem cookies", includeProxy: true, includeCookies: false},
 		{name: "proxy com cookies", includeProxy: true, includeCookies: true},
+		{name: "direto sem cookies", includeProxy: false, includeCookies: false},
 		{name: "direto com cookies", includeProxy: false, includeCookies: true},
 	}
 

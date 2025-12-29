@@ -5,8 +5,10 @@ RUN apk add --no-cache \
       build-base \
       sqlite-dev \
       tzdata \
-      yt-dlp \
+      wget \
       ffmpeg
+RUN wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/bin/yt-dlp \
+    && chmod +x /usr/bin/yt-dlp
 ENV TZ=America/Sao_Paulo
 
 WORKDIR /app

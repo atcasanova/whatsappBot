@@ -3,6 +3,7 @@ FROM golang:1.24-alpine
 
 RUN apk add --no-cache \
       build-base \
+      python3 \
       sqlite-dev \
       tzdata \
       wget \

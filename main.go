@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -850,9 +851,16 @@ func init() {
 		}
 	})
 
+	apiServer := startAPIServer(client)
+
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := apiServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("⚠️ falha ao encerrar API HTTP: %v", err)
+	}
 	client.Disconnect()
 }
 
@@ -1514,15 +1522,86 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 }
 
 func sendText(cli *whatsmeow.Client, to, text string) {
+	if err := sendTextWithError(cli, to, text); err != nil {
+		log.Printf("❌ falha ao enviar mensagem: %v", err)
+	}
+}
+
+func sendTextWithError(cli *whatsmeow.Client, to, text string) error {
 	jid, err := types.ParseJID(to)
 	if err != nil {
-		log.Printf("⚠️ JID inválido %q: %v", to, err)
-		return
+		return fmt.Errorf("JID inválido %q: %w", to, err)
 	}
 	msg := &waProto.Message{Conversation: proto.String(text)}
 	if _, err := cli.SendMessage(context.Background(), jid, msg); err != nil {
-		log.Printf("❌ falha ao enviar mensagem: %v", err)
+		return fmt.Errorf("falha ao enviar mensagem: %w", err)
 	}
+	return nil
+}
+
+func normalizeTarget(target string) (string, error) {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" {
+		return "", fmt.Errorf("destino vazio")
+	}
+	if strings.Contains(trimmed, "@") {
+		return trimmed, nil
+	}
+	return trimmed + "@s.whatsapp.net", nil
+}
+
+func startAPIServer(cli *whatsmeow.Client) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var payload struct {
+			To   string `json:"to"`
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "JSON inválido", http.StatusBadRequest)
+			return
+		}
+
+		target, err := normalizeTarget(payload.To)
+		if err != nil {
+			http.Error(w, "Destino obrigatório", http.StatusBadRequest)
+			return
+		}
+
+		text := strings.TrimSpace(payload.Text)
+		if text == "" {
+			http.Error(w, "Texto obrigatório", http.StatusBadRequest)
+			return
+		}
+
+		if err := sendTextWithError(cli, target, text); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status": "queued",
+		})
+	})
+
+	server := &http.Server{
+		Addr:    ":9999",
+		Handler: mux,
+	}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("falha ao iniciar API HTTP: %v", err)
+		}
+	}()
+	log.Println("🌐 API REST pronta em http://0.0.0.0:9999")
+	return server
 }
 
 func main() {}

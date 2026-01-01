@@ -298,7 +298,60 @@ func normalizePhone(phone string) string {
 	}, phone)
 }
 
-var reVideoURL = regexp.MustCompile(`https?://[^\s]+`)
+func normalizePixAmount(raw string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, raw)
+}
+
+func pixField(id, value string) string {
+	return fmt.Sprintf("%s%02d%s", id, len(value), value)
+}
+
+func crc16CCITT(input string) string {
+	crc := 0xFFFF
+	for i := 0; i < len(input); i++ {
+		crc ^= int(input[i]) << 8
+		for bit := 0; bit < 8; bit++ {
+			if crc&0x8000 != 0 {
+				crc = (crc << 1) ^ 0x1021
+			} else {
+				crc <<= 1
+			}
+			crc &= 0xFFFF
+		}
+	}
+	return fmt.Sprintf("%04X", crc)
+}
+
+func buildPixPayload(email, name, city, amount string) string {
+	gui := "br.gov.bcb.pix"
+	txid := "***"
+	merchantAccount := pixField("00", gui) + pixField("01", email)
+	payload := pixField("00", "01") +
+		pixField("26", merchantAccount) +
+		pixField("52", "0000") +
+		pixField("53", "986")
+	if amount != "" {
+		payload += pixField("54", amount)
+	}
+	payload += pixField("58", "BR") +
+		pixField("59", strings.ToUpper(name)) +
+		pixField("60", strings.ToUpper(strings.ReplaceAll(city, " ", "."))) +
+		pixField("62", pixField("05", txid)) +
+		"6304"
+
+	return payload + crc16CCITT(payload)
+}
+
+var (
+	reVideoURL  = regexp.MustCompile(`https?://[^\s]+`)
+	rePixEmail  = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+	rePixNumber = regexp.MustCompile(`\d[\d.,-]*\d`)
+)
 
 func fileSize(path string) (int64, error) {
 	info, err := os.Stat(path)
@@ -954,6 +1007,68 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			if err := sendDocumentFromFile(cli, chatBare, "cnh.pdf"); err != nil {
 				log.Printf("❌ Falha ao enviar CNH: %v", err)
 				sendText(cli, chatBare, "❌ "+err.Error())
+			}
+			return
+		}
+		if trimmedBody == "!pix" || strings.HasPrefix(trimmedBody, "!pix ") {
+			log.Println("✅ Disparou !pix")
+			amountInput := strings.TrimSpace(trimmedBody[len("!pix"):])
+			amount := ""
+			if amountInput != "" {
+				amount = normalizePixAmount(amountInput)
+				if amount == "" {
+					sendText(cli, chatBare, "❌ Valor inválido para o Pix.")
+					return
+				}
+			}
+			email := strings.TrimSpace(os.Getenv("EMAIL"))
+			name := strings.TrimSpace(os.Getenv("NOME"))
+			city := strings.TrimSpace(os.Getenv("CIDADE"))
+			if email == "" || name == "" || city == "" {
+				sendText(cli, chatBare, "❌ Configure EMAIL, NOME e CIDADE nas variáveis de ambiente.")
+				return
+			}
+			payload := buildPixPayload(email, name, city, amount)
+			sendText(cli, chatBare, payload)
+			return
+		}
+		if trimmedBody == "!copia" {
+			log.Println("✅ Disparou !copia")
+			ext := v.Message.GetExtendedTextMessage()
+			if ext == nil || ext.GetContextInfo() == nil || ext.GetContextInfo().GetQuotedMessage() == nil {
+				sendText(cli, chatBare, "❌ Responda a uma mensagem para usar !copia.")
+				return
+			}
+			qm := ext.GetContextInfo().GetQuotedMessage()
+			quotedText := qm.GetConversation()
+			if quotedText == "" && qm.GetExtendedTextMessage() != nil {
+				quotedText = qm.GetExtendedTextMessage().GetText()
+			}
+			if strings.TrimSpace(quotedText) == "" {
+				sendText(cli, chatBare, "❌ A mensagem respondida não tem texto.")
+				return
+			}
+			seen := make(map[string]struct{})
+			found := false
+			for _, email := range rePixEmail.FindAllString(quotedText, -1) {
+				if _, ok := seen[email]; ok {
+					continue
+				}
+				seen[email] = struct{}{}
+				sendText(cli, chatBare, email)
+				found = true
+			}
+			strippedText := rePixEmail.ReplaceAllString(quotedText, " ")
+			for _, number := range rePixNumber.FindAllString(strippedText, -1) {
+				if _, ok := seen[number]; ok {
+					continue
+				}
+				seen[number] = struct{}{}
+				sendText(cli, chatBare, number)
+				found = true
+			}
+			if !found {
+				sendText(cli, chatBare, "❌ Nenhum e-mail ou número encontrado.")
 			}
 			return
 		}

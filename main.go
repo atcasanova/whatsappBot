@@ -299,12 +299,23 @@ func normalizePhone(phone string) string {
 }
 
 func normalizePixAmount(raw string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
+	trimmed := strings.TrimSpace(raw)
+	normalized := strings.ReplaceAll(trimmed, ",", ".")
+	var b strings.Builder
+	dotSeen := false
+	for _, r := range normalized {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.' && !dotSeen:
+			if b.Len() == 0 {
+				b.WriteByte('0')
+			}
+			b.WriteRune(r)
+			dotSeen = true
 		}
-		return -1
-	}, raw)
+	}
+	return b.String()
 }
 
 func sanitizePixValue(raw string) string {

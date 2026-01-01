@@ -307,6 +307,11 @@ func normalizePixAmount(raw string) string {
 	}, raw)
 }
 
+func sanitizePixValue(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	return strings.Trim(trimmed, "\"'")
+}
+
 func pixField(id, value string) string {
 	return fmt.Sprintf("%s%02d%s", id, len(value), value)
 }
@@ -1021,9 +1026,9 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					return
 				}
 			}
-			email := strings.TrimSpace(os.Getenv("EMAIL"))
-			name := strings.TrimSpace(os.Getenv("NOME"))
-			city := strings.TrimSpace(os.Getenv("CIDADE"))
+			email := sanitizePixValue(os.Getenv("EMAIL"))
+			name := sanitizePixValue(os.Getenv("NOME"))
+			city := sanitizePixValue(os.Getenv("CIDADE"))
 			if email == "" || name == "" || city == "" {
 				sendText(cli, chatBare, "❌ Configure EMAIL, NOME e CIDADE nas variáveis de ambiente.")
 				return

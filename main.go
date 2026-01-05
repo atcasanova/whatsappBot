@@ -285,7 +285,13 @@ func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, er
 	}
 	if useProxy {
 		if downloadProxy != "" {
-			allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(proxyForChrome(downloadProxy)))
+			proxy, err := proxyForChrome(downloadProxy)
+			if err != nil {
+				log.Printf("⚠️ proxy inválido para PDF (%s): %v", downloadProxy, err)
+			} else {
+				log.Printf("🌐 proxy do PDF: %s", proxy)
+				allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(proxy))
+			}
 		} else {
 			log.Printf("⚠️ proxy não configurado para PDF, seguindo sem proxy")
 		}
@@ -330,12 +336,30 @@ func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, er
 	return pdfData, nil
 }
 
-func proxyForChrome(raw string) string {
+func proxyForChrome(raw string) (string, error) {
 	proxy := strings.TrimSpace(raw)
-	if strings.HasPrefix(proxy, "socks5h://") {
-		return "socks5://" + strings.TrimPrefix(proxy, "socks5h://")
+	if proxy == "" {
+		return "", fmt.Errorf("proxy vazio")
 	}
-	return proxy
+	if !strings.Contains(proxy, "://") {
+		return proxy, nil
+	}
+	parsed, err := url.Parse(proxy)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("proxy sem host")
+	}
+	switch parsed.Scheme {
+	case "socks5h", "socks5":
+		parsed.Scheme = "socks5"
+		return parsed.String(), nil
+	case "http", "https":
+		return parsed.String(), nil
+	default:
+		return "", fmt.Errorf("esquema de proxy não suportado: %s", parsed.Scheme)
+	}
 }
 
 func triggerKeepAlive(cli *whatsmeow.Client) {

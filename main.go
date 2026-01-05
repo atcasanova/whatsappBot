@@ -354,11 +354,12 @@ func proxyForChrome(raw string) (string, error) {
 	}
 	switch parsed.Scheme {
 	case "socks5h":
+		parsed.Scheme = "socks5"
 		return parsed.String(), nil
 	case "socks5":
 		host := parsed.Hostname()
 		if host != "" && net.ParseIP(host) == nil {
-			parsed.Scheme = "socks5h"
+			parsed.Scheme = "socks5"
 		}
 		return parsed.String(), nil
 	case "http", "https":

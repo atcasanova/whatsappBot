@@ -3,8 +3,14 @@ FROM golang:1.24-alpine
 
 RUN apk add --no-cache \
       build-base \
+      ca-certificates \
+      chromium \
+      freetype \
+      harfbuzz \
+      nss \
       python3 \
       sqlite-dev \
+      ttf-freefont \
       tzdata \
       wget \
       ffmpeg
@@ -14,6 +20,7 @@ ENV TZ=America/Sao_Paulo
 ENV NOME=""
 ENV CIDADE=""
 ENV EMAIL=""
+ENV CHROME_BIN="/usr/bin/chromium-browser"
 
 WORKDIR /app
 COPY go.mod go.sum ./

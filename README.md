@@ -92,6 +92,8 @@ docker-compose up --build -d
 | `!chatgpt <txt>`            | Qualquer conversa              | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada (texto **ou imagem**) ao ChatGPT e devolve a resposta |
 | `!img <prompt>`             | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via gpt-image-1 (qualidade média) diretamente no chat |
 | `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa mídias de qualquer site suportado pelo `yt-dlp` (Instagram, Threads, Facebook, TikTok, YouTube, X/Twitter etc.) e envia no chat |
+| `!pdf`                      | Qualquer conversa              | (Responder a um link)                    | Renderiza a página como Googlebot e envia o PDF gerado |
+| `!pdf nojs`                 | Qualquer conversa              | (Responder a um link)                    | Renderiza a página com JavaScript desativado e envia o PDF gerado |
 | `!sticker`                  | Qualquer conversa              | (Responder a uma imagem ou vídeo curto)  | Converte a mídia citada em figurinha (imagem estática para fotos, animada para vídeos/GIFs dentro dos limites do WhatsApp) |
 
 ---

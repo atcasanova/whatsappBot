@@ -270,7 +270,7 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func renderURLToPDF(targetURL string, disableJS bool) ([]byte, error) {
+func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, error) {
 	timeout := time.Duration(defaultPDFTimeoutSec) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -282,6 +282,13 @@ func renderURLToPDF(targetURL string, disableJS bool) ([]byte, error) {
 		chromedp.DisableGPU,
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
+	}
+	if useProxy {
+		if downloadProxy != "" {
+			allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(downloadProxy))
+		} else {
+			log.Printf("⚠️ proxy não configurado para PDF, seguindo sem proxy")
+		}
 	}
 	if chromePath := strings.TrimSpace(os.Getenv("CHROME_BIN")); chromePath != "" {
 		allocatorOpts = append(allocatorOpts, chromedp.ExecPath(chromePath))
@@ -1501,7 +1508,16 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		if strings.HasPrefix(body, "!pdf") {
 			log.Println("✅ Disparou !pdf")
 			parts := strings.Fields(body)
-			disableJS := len(parts) > 1 && parts[1] == "nojs"
+			disableJS := false
+			disableProxy := false
+			for _, part := range parts[1:] {
+				switch part {
+				case "nojs":
+					disableJS = true
+				case "noproxy":
+					disableProxy = true
+				}
+			}
 			var quotedText string
 			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
 				if ctx := ext.GetContextInfo(); ctx != nil {
@@ -1523,7 +1539,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				return
 			}
 			go func() {
-				pdfData, err := renderURLToPDF(targetURL, disableJS)
+				pdfData, err := renderURLToPDF(targetURL, disableJS, !disableProxy)
 				if err != nil {
 					sendText(cli, chatBare, "❌ Erro ao gerar PDF: "+err.Error())
 					return

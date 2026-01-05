@@ -94,6 +94,8 @@ docker-compose up --build -d
 | `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa mídias de qualquer site suportado pelo `yt-dlp` (Instagram, Threads, Facebook, TikTok, YouTube, X/Twitter etc.) e envia no chat |
 | `!pdf`                      | Qualquer conversa              | (Responder a um link)                    | Renderiza a página como Googlebot e envia o PDF gerado |
 | `!pdf nojs`                 | Qualquer conversa              | (Responder a um link)                    | Renderiza a página com JavaScript desativado e envia o PDF gerado |
+| `!pdf noproxy`              | Qualquer conversa              | (Responder a um link)                    | Renderiza a página sem proxy mesmo quando `DOWNLOAD_PROXY` está configurado |
+| `!pdf nojs noproxy`         | Qualquer conversa              | (Responder a um link)                    | Renderiza a página sem proxy e com JavaScript desativado |
 | `!sticker`                  | Qualquer conversa              | (Responder a uma imagem ou vídeo curto)  | Converte a mídia citada em figurinha (imagem estática para fotos, animada para vídeos/GIFs dentro dos limites do WhatsApp) |
 
 ---

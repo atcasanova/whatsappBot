@@ -292,6 +292,13 @@ func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, er
 			} else {
 				log.Printf("🌐 proxy do PDF: %s", proxy)
 				allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(proxy))
+				if strings.HasPrefix(proxy, "socks5://") {
+					log.Printf("🧭 forçando resolução DNS via SOCKS5 para PDF")
+					allocatorOpts = append(allocatorOpts,
+						chromedp.Flag("host-resolver-rules", "MAP * ~NOTFOUND , EXCLUDE localhost"),
+						chromedp.Flag("proxy-bypass-list", "<-loopback>"),
+					)
+				}
 			}
 		} else {
 			log.Printf("⚠️ proxy não configurado para PDF, seguindo sem proxy")

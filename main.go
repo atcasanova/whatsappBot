@@ -292,18 +292,6 @@ func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, er
 			} else {
 				log.Printf("🌐 proxy do PDF: %s", proxy)
 				allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(proxy))
-				if strings.HasPrefix(proxy, "socks5://") {
-					excludedHosts := []string{"localhost"}
-					if proxyHost := proxyHostForChrome(proxy); proxyHost != "" {
-						excludedHosts = append(excludedHosts, proxyHost)
-					}
-					hostResolverRules := fmt.Sprintf("MAP * ~NOTFOUND , EXCLUDE %s", strings.Join(excludedHosts, ","))
-					log.Printf("🧭 forçando resolução DNS via SOCKS5 para PDF")
-					allocatorOpts = append(allocatorOpts,
-						chromedp.Flag("host-resolver-rules", hostResolverRules),
-						chromedp.Flag("proxy-bypass-list", "<-loopback>"),
-					)
-				}
 			}
 		} else {
 			log.Printf("⚠️ proxy não configurado para PDF, seguindo sem proxy")
@@ -379,24 +367,6 @@ func proxyForChrome(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("esquema de proxy não suportado: %s", parsed.Scheme)
 	}
-}
-
-func proxyHostForChrome(proxy string) string {
-	proxy = strings.TrimSpace(proxy)
-	if proxy == "" {
-		return ""
-	}
-	if !strings.Contains(proxy, "://") {
-		if host, _, err := net.SplitHostPort(proxy); err == nil {
-			return host
-		}
-		return proxy
-	}
-	parsed, err := url.Parse(proxy)
-	if err != nil {
-		return ""
-	}
-	return parsed.Hostname()
 }
 
 func triggerKeepAlive(cli *whatsmeow.Client) {

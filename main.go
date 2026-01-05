@@ -285,7 +285,7 @@ func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, er
 	}
 	if useProxy {
 		if downloadProxy != "" {
-			allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(downloadProxy))
+			allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(proxyForChrome(downloadProxy)))
 		} else {
 			log.Printf("⚠️ proxy não configurado para PDF, seguindo sem proxy")
 		}
@@ -328,6 +328,14 @@ func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, er
 		return nil, fmt.Errorf("pdf vazio")
 	}
 	return pdfData, nil
+}
+
+func proxyForChrome(raw string) string {
+	proxy := strings.TrimSpace(raw)
+	if strings.HasPrefix(proxy, "socks5h://") {
+		return "socks5://" + strings.TrimPrefix(proxy, "socks5h://")
+	}
+	return proxy
 }
 
 func triggerKeepAlive(cli *whatsmeow.Client) {

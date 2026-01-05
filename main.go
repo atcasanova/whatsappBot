@@ -295,7 +295,7 @@ func renderURLToPDF(targetURL string, disableJS bool) ([]byte, error) {
 	var pdfData []byte
 	actions := []chromedp.Action{
 		network.Enable(),
-		network.SetUserAgentOverride(googlebotUserAgent),
+		emulation.SetUserAgentOverride(googlebotUserAgent),
 	}
 	if disableJS {
 		actions = append(actions, emulation.SetScriptExecutionDisabled(true))

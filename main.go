@@ -16,6 +16,7 @@ import (
 	"math/rand"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -352,8 +353,13 @@ func proxyForChrome(raw string) (string, error) {
 		return "", fmt.Errorf("proxy sem host")
 	}
 	switch parsed.Scheme {
-	case "socks5h", "socks5":
-		parsed.Scheme = "socks5"
+	case "socks5h":
+		return parsed.String(), nil
+	case "socks5":
+		host := parsed.Hostname()
+		if host != "" && net.ParseIP(host) == nil {
+			parsed.Scheme = "socks5h"
+		}
 		return parsed.String(), nil
 	case "http", "https":
 		return parsed.String(), nil

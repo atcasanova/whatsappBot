@@ -81,22 +81,25 @@ docker-compose up --build -d
 |-----------------------------|--------------------------------|------------------------------------------|---------------------------------------------------------------------|
 | `!model`                    | Sua conversa consigo mesmo     | `!model`                                 | Mostra o modelo atual usado pelo bot na API OpenAI                  |
 | `!model <nome>`             | Sua conversa consigo mesmo     | `!model gpt-4`                           | Altera o modelo do ChatGPT sem reiniciar o container                |
-| `!insta <cookies>`          | Sua conversa consigo mesmo     | `!insta sessionid=abc`                  | Atualiza o conteúdo do arquivo de cookies usado pelo `yt-dlp`. Também é possível montar o arquivo e definir `INSTA_COOKIES_PATH`. |
-| `!tiktok <cookies>`         | Sua conversa consigo mesmo     | `!tiktok sid_tt=abc`                    | Atualiza os cookies do TikTok usados no `yt-dlp`. Também é possível montar o arquivo e definir `TIKTOK_COOKIES_PATH`. |
-| `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
-| `!podcast`                  | Qualquer conversa              | `!podcast`                               | Transcreve o áudio citado e resume com clareza usando o modelo configurado |
-| `!resumo`                   | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
+| `!logs <groupJID>`          | Sua conversa consigo mesmo     | `!logs 551199999999-14700@g.us`          | Mostra o histórico armazenado do grupo informado                    |
 | `!grupos`                   | Sua conversa consigo mesmo     | `!grupos`                                | Mostra os grupos monitorados para !resumo                           |
 | `!grupos add <id do grupo>` | Sua conversa consigo mesmo     | `!grupos add 551199999999-14700@g.us`    | Adiciona grupos monitorados para !resumo                            |
 | `!grupos del <id do grupo>` | Sua conversa consigo mesmo     | `!grupos del 551199999999-14700@g.us`    | Remove grupos monitorados para !resumo                              |
+| `!insta <cookies>`          | Sua conversa consigo mesmo     | `!insta sessionid=abc`                   | Atualiza o conteúdo do arquivo de cookies usado pelo `yt-dlp`. Também é possível montar o arquivo e definir `INSTA_COOKIES_PATH`. |
+| `!tiktok <cookies>`         | Sua conversa consigo mesmo     | `!tiktok sid_tt=abc`                     | Atualiza os cookies do TikTok usados no `yt-dlp`. Também é possível montar o arquivo e definir `TIKTOK_COOKIES_PATH`. |
+| `!carteirinha`              | Qualquer conversa              | `!carteirinha`                           | Envia a imagem `carteirinha.jpg` para o chat                        |
+| `!cnh`                      | Qualquer conversa              | `!cnh`                                   | Envia o PDF `cnh.pdf` para o chat                                    |
+| `!pix`                      | Qualquer conversa              | `!pix 120,50`                            | Gera um payload Pix (com valor opcional)                             |
+| `!copia`                    | Qualquer conversa              | (Responder a uma mensagem)               | Extrai e envia e-mails/telefones da mensagem citada                 |
 | `!chatgpt <txt>`            | Qualquer conversa              | `!chatgpt Está correto?`                 | Envia `<txt>` + mensagem citada (texto **ou imagem**) ao ChatGPT e devolve a resposta |
-| `!img <prompt>`             | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via gpt-image-1 (qualidade média) diretamente no chat |
-| `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa mídias de qualquer site suportado pelo `yt-dlp` (Instagram, Threads, Facebook, TikTok, YouTube, X/Twitter etc.) e envia no chat |
-| `!pdf`                      | Qualquer conversa              | (Responder a um link)                    | Renderiza a página como Googlebot e envia o PDF gerado |
-| `!pdf nojs`                 | Qualquer conversa              | (Responder a um link)                    | Renderiza a página com JavaScript desativado e envia o PDF gerado |
-| `!pdf noproxy`              | Qualquer conversa              | (Responder a um link)                    | Renderiza a página sem proxy mesmo quando `DOWNLOAD_PROXY` está configurado |
-| `!pdf nojs noproxy`         | Qualquer conversa              | (Responder a um link)                    | Renderiza a página sem proxy e com JavaScript desativado |
-| `!sticker`                  | Qualquer conversa              | (Responder a uma imagem ou vídeo curto)  | Converte a mídia citada em figurinha (imagem estática para fotos, animada para vídeos/GIFs dentro dos limites do WhatsApp) |
+| `!edit <prompt>`            | Qualquer conversa              | (Responder a uma imagem)                 | Edita a imagem citada via gpt-image-1.5 e envia o resultado         |
+| `!img <prompt>`             | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via gpt-image-1.5 diretamente no chat       |
+| `!sticker`                  | Qualquer conversa              | (Responder a uma imagem ou vídeo curto)  | Converte a mídia citada em figurinha (imagem estática ou animada)   |
+| `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa mídias suportadas pelo `yt-dlp` e envia no chat               |
+| `!paywall`                  | Sua conversa consigo mesmo     | (Responder a um link)                    | Gera link alternativo usando `PAYWALL_REMOVER`                      |
+| `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |
+| `!podcast`                  | Qualquer conversa              | `!podcast`                               | Transcreve o áudio citado e resume com clareza usando o modelo configurado |
+| `!resumo`                   | Grupos autorizados             | `!resumo`                                | Gera resumo das mensagens trocadas **hoje** nesse grupo             |
 
 ---
 

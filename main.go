@@ -18,7 +18,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"

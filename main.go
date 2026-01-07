@@ -16,7 +16,6 @@ import (
 	"math/rand"
 	"mime"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -36,10 +35,6 @@ import (
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
 
-	"github.com/chromedp/cdproto/emulation"
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
 	"go.mau.fi/whatsmeow"
 	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
@@ -53,10 +48,8 @@ import (
 )
 
 const (
-	summaryMarker        = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
-	maxStickerSizeBytes  = 900 * 1024 // keep stickers safely under WhatsApp's 1MB limit
-	googlebotUserAgent   = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
-	defaultPDFTimeoutSec = 60
+	summaryMarker       = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
+	maxStickerSizeBytes = 900 * 1024 // keep stickers safely under WhatsApp's 1MB limit
 )
 
 // Msg representa uma mensagem armazenada, possivelmente com quote
@@ -269,104 +262,6 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func renderURLToPDF(targetURL string, disableJS bool, useProxy bool) ([]byte, error) {
-	timeout := time.Duration(defaultPDFTimeoutSec) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	allocatorOpts := []chromedp.ExecAllocatorOption{
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.Headless,
-		chromedp.DisableGPU,
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-	}
-	if useProxy {
-		if downloadProxy != "" {
-			proxy, err := proxyForChrome(downloadProxy)
-			if err != nil {
-				log.Printf("⚠️ proxy inválido para PDF (%s): %v", downloadProxy, err)
-			} else {
-				log.Printf("🌐 proxy do PDF: %s", proxy)
-				allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(proxy))
-			}
-		} else {
-			log.Printf("⚠️ proxy não configurado para PDF, seguindo sem proxy")
-		}
-	}
-	if chromePath := strings.TrimSpace(os.Getenv("CHROME_BIN")); chromePath != "" {
-		allocatorOpts = append(allocatorOpts, chromedp.ExecPath(chromePath))
-	}
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocatorOpts...)
-	defer cancelAlloc()
-
-	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
-	defer cancelBrowser()
-
-	var pdfData []byte
-	actions := []chromedp.Action{
-		network.Enable(),
-		emulation.SetUserAgentOverride(googlebotUserAgent),
-	}
-	if disableJS {
-		actions = append(actions, emulation.SetScriptExecutionDisabled(true))
-	}
-	actions = append(actions,
-		chromedp.Navigate(targetURL),
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			buf, _, err := page.PrintToPDF().WithPrintBackground(true).Do(ctx)
-			if err != nil {
-				return err
-			}
-			pdfData = buf
-			return nil
-		}),
-	)
-
-	if err := chromedp.Run(browserCtx, actions...); err != nil {
-		return nil, err
-	}
-	if len(pdfData) == 0 {
-		return nil, fmt.Errorf("pdf vazio")
-	}
-	return pdfData, nil
-}
-
-func proxyForChrome(raw string) (string, error) {
-	proxy := strings.TrimSpace(raw)
-	if proxy == "" {
-		return "", fmt.Errorf("proxy vazio")
-	}
-	if !strings.Contains(proxy, "://") {
-		return proxy, nil
-	}
-	parsed, err := url.Parse(proxy)
-	if err != nil {
-		return "", err
-	}
-	if parsed.Host == "" {
-		return "", fmt.Errorf("proxy sem host")
-	}
-	switch parsed.Scheme {
-	case "socks5h":
-		parsed.Scheme = "socks5"
-		return parsed.String(), nil
-	case "socks5":
-		host := parsed.Hostname()
-		if host != "" && net.ParseIP(host) == nil {
-			parsed.Scheme = "socks5"
-		}
-		return parsed.String(), nil
-	case "http", "https":
-		return parsed.String(), nil
-	default:
-		return "", fmt.Errorf("esquema de proxy não suportado: %s", parsed.Scheme)
-	}
 }
 
 func triggerKeepAlive(cli *whatsmeow.Client) {
@@ -711,18 +606,6 @@ func convertVideoToStickerWebP(inputPath string) (string, error) {
 func extractVideoURL(text string) string {
 	match := reVideoURL.FindString(text)
 	return match
-}
-
-func pdfFilenameFromURL(rawURL string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Host == "" {
-		return "page.pdf"
-	}
-	host := strings.ReplaceAll(parsed.Hostname(), ".", "_")
-	if host == "" {
-		return "page.pdf"
-	}
-	return host + ".pdf"
 }
 
 func cookieArgsForURL(url string) []string {
@@ -1544,19 +1427,8 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			return
 		}
-		if strings.HasPrefix(body, "!pdf") {
-			log.Println("✅ Disparou !pdf")
-			parts := strings.Fields(body)
-			disableJS := false
-			disableProxy := false
-			for _, part := range parts[1:] {
-				switch part {
-				case "nojs":
-					disableJS = true
-				case "noproxy":
-					disableProxy = true
-				}
-			}
+		if body == "!paywall" {
+			log.Println("✅ Disparou !paywall")
 			var quotedText string
 			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
 				if ctx := ext.GetContextInfo(); ctx != nil {
@@ -1569,46 +1441,21 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				}
 			}
 			if quotedText == "" {
-				sendText(cli, chatBare, "❌ Responda ao link para usar !pdf.")
+				sendText(cli, chatBare, "❌ Responda ao link para usar !paywall.")
 				return
 			}
 			targetURL := extractVideoURL(quotedText)
 			if targetURL == "" {
-				sendText(cli, chatBare, "❌ Link inválido para !pdf.")
+				sendText(cli, chatBare, "❌ Link inválido para !paywall.")
 				return
 			}
-			go func() {
-				pdfData, err := renderURLToPDF(targetURL, disableJS, !disableProxy)
-				if err != nil {
-					sendText(cli, chatBare, "❌ Erro ao gerar PDF: "+err.Error())
-					return
-				}
-				up, err := cli.Upload(context.Background(), pdfData, whatsmeow.MediaDocument)
-				if err != nil {
-					sendText(cli, chatBare, "❌ Erro no upload do PDF: "+err.Error())
-					return
-				}
-				jid, err := types.ParseJID(chatBare)
-				if err != nil {
-					log.Printf("⚠️ JID inválido: %v", err)
-					return
-				}
-				fileName := pdfFilenameFromURL(targetURL)
-				docMsg := &waProto.DocumentMessage{
-					Mimetype:      proto.String("application/pdf"),
-					FileName:      proto.String(fileName),
-					URL:           proto.String(up.URL),
-					DirectPath:    proto.String(up.DirectPath),
-					MediaKey:      up.MediaKey,
-					FileEncSHA256: up.FileEncSHA256,
-					FileSHA256:    up.FileSHA256,
-					FileLength:    proto.Uint64(up.FileLength),
-					Caption:       proto.String(targetURL),
-				}
-				if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{DocumentMessage: docMsg}); err != nil {
-					log.Printf("❌ falha ao enviar PDF: %v", err)
-				}
-			}()
+			base := strings.TrimSpace(os.Getenv("PAYWALL_REMOVER"))
+			if base == "" {
+				sendText(cli, chatBare, "❌ PAYWALL_REMOVER não configurado.")
+				return
+			}
+			paywallURL := strings.TrimRight(base, "/") + "/" + targetURL
+			sendText(cli, chatBare, paywallURL)
 			return
 		}
 		// !ler

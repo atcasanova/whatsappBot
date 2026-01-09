@@ -18,6 +18,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -605,6 +606,49 @@ func convertVideoToStickerWebP(inputPath string) (string, error) {
 func extractVideoURL(text string) string {
 	match := reVideoURL.FindString(text)
 	return match
+}
+
+func buildApiflashURL(targetURL string) (string, error) {
+	key := strings.TrimSpace(os.Getenv("APIFLASH_KEY"))
+	if key == "" {
+		return "", fmt.Errorf("APIFLASH_KEY não configurado")
+	}
+	query := url.Values{}
+	query.Set("access_key", key)
+	query.Set("wait_until", "page_loaded")
+	query.Set("url", targetURL)
+	query.Set("no_ads", "true")
+	query.Set("full_page", "true")
+	return "https://api.apiflash.com/v1/urltoimage?" + query.Encode(), nil
+}
+
+func fetchApiflashScreenshot(ctx context.Context, targetURL string) ([]byte, string, error) {
+	requestURL, err := buildApiflashURL(targetURL)
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("falha ao criar requisição: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("falha ao chamar API do Apiflash: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("erro da API (%d): %s", resp.StatusCode, string(bodyBytes))
+	}
+	bytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("falha ao ler imagem: %w", err)
+	}
+	mimeType := resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	return bytes, mimeType, nil
 }
 
 func cookieArgsForURL(url string) []string {
@@ -1423,6 +1467,59 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				go downloadAndSendMedia(cli, chatBare, url)
 			} else {
 				sendText(cli, chatBare, "❌ Link inválido para download.")
+			}
+			return
+		}
+		if body == "!print" {
+			log.Println("✅ Disparou !print")
+			var quotedText string
+			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+				if ctx := ext.GetContextInfo(); ctx != nil {
+					if qm := ctx.GetQuotedMessage(); qm != nil {
+						quotedText = qm.GetConversation()
+						if quotedText == "" && qm.GetExtendedTextMessage() != nil {
+							quotedText = qm.GetExtendedTextMessage().GetText()
+						}
+					}
+				}
+			}
+			if quotedText == "" {
+				sendText(cli, chatBare, "❌ Responda ao link para usar !print.")
+				return
+			}
+			targetURL := extractVideoURL(quotedText)
+			if targetURL == "" {
+				sendText(cli, chatBare, "❌ Link inválido para !print.")
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			imgBytes, mimeType, err := fetchApiflashScreenshot(ctx, targetURL)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Erro ao gerar captura: "+err.Error())
+				return
+			}
+			up, err := cli.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Erro no upload da captura: "+err.Error())
+				return
+			}
+			jid, err := types.ParseJID(chatBare)
+			if err != nil {
+				log.Printf("⚠️ JID inválido: %v", err)
+				return
+			}
+			imageMsg := &waProto.ImageMessage{
+				Mimetype:      proto.String(mimeType),
+				URL:           proto.String(up.URL),
+				DirectPath:    proto.String(up.DirectPath),
+				MediaKey:      up.MediaKey,
+				FileEncSHA256: up.FileEncSHA256,
+				FileSHA256:    up.FileSHA256,
+				FileLength:    proto.Uint64(up.FileLength),
+			}
+			if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imageMsg}); err != nil {
+				log.Printf("❌ falha ao enviar captura: %v", err)
 			}
 			return
 		}

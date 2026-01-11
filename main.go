@@ -747,7 +747,7 @@ func fetchApiflashScreenshot(ctx context.Context, targetURL string) ([]byte, str
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, "", fmt.Errorf("erro da API (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
-	bytes, err := io.ReadAll(resp.Body)
+	imageBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, "", fmt.Errorf("falha ao ler imagem: %w", err)
 	}
@@ -755,30 +755,30 @@ func fetchApiflashScreenshot(ctx context.Context, targetURL string) ([]byte, str
 	if mimeType == "" {
 		mimeType = "image/jpeg"
 	}
-	img, format, err := image.Decode(bytes.NewReader(bytes))
+	img, format, err := image.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
-		return bytes, mimeType, nil
+		return imageBytes, mimeType, nil
 	}
 	trimmed, trimmedOk := trimWhitespace(img)
 	if !trimmedOk {
-		return bytes, mimeType, nil
+		return imageBytes, mimeType, nil
 	}
 	var buf bytes.Buffer
 	outputMime := mimeType
 	switch {
 	case strings.Contains(mimeType, "png") || format == "png":
 		if err := png.Encode(&buf, trimmed); err != nil {
-			return bytes, mimeType, nil
+			return imageBytes, mimeType, nil
 		}
 		outputMime = "image/png"
 	case strings.Contains(mimeType, "jpeg") || strings.Contains(mimeType, "jpg") || format == "jpeg":
 		if err := jpeg.Encode(&buf, trimmed, &jpeg.Options{Quality: 95}); err != nil {
-			return bytes, mimeType, nil
+			return imageBytes, mimeType, nil
 		}
 		outputMime = "image/jpeg"
 	default:
 		if err := png.Encode(&buf, trimmed); err != nil {
-			return bytes, mimeType, nil
+			return imageBytes, mimeType, nil
 		}
 		outputMime = "image/png"
 	}

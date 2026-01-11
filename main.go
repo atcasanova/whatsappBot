@@ -619,6 +619,8 @@ func buildApiflashURL(targetURL string) (string, error) {
 	query.Set("url", targetURL)
 	query.Set("no_ads", "true")
 	query.Set("full_page", "true")
+	query.Set("user_agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1")
+	query.Set("width", "990")
 	return "https://api.apiflash.com/v1/urltoimage?" + query.Encode(), nil
 }
 

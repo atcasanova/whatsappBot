@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -61,6 +62,17 @@ type Msg struct {
 	QuotedBody string // texto citado
 }
 
+type savedTrigger struct {
+	Name     string
+	Kind     string
+	MimeType string
+	FileName string
+	Data     []byte
+	Text     string
+	Caption  string
+	IsPTT    bool
+}
+
 var (
 	openaiClient   *go_openai.Client
 	model          string
@@ -75,7 +87,32 @@ var (
 	messageHistory = make(map[string][]Msg)
 	currentDay     = time.Now().Day()
 	contactNames   = make(map[string]string)
+	triggerDB      *sql.DB
 )
+
+var reservedTriggers = map[string]struct{}{
+	"salvar":      {},
+	"triggers":    {},
+	"carteirinha": {},
+	"cnh":         {},
+	"pix":         {},
+	"copia":       {},
+	"chatgpt":     {},
+	"edit":        {},
+	"img":         {},
+	"sticker":     {},
+	"download":    {},
+	"print":       {},
+	"paywall":     {},
+	"ler":         {},
+	"podcast":     {},
+	"resumo":      {},
+	"logs":        {},
+	"grupos":      {},
+	"model":       {},
+	"insta":       {},
+	"tiktok":      {},
+}
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
@@ -906,6 +943,7 @@ func init() {
 	}
 	_ = godotenv.Load()
 
+	var err error
 	openaiClient = go_openai.NewClient(os.Getenv("OPENAI_API_KEY"))
 	pathMp3 = mustEnv("PATH_MP3", ".")
 	sessionPath := mustEnv("PATH_SESSION", "./")
@@ -930,6 +968,11 @@ func init() {
 	}
 
 	configureClientIdentity()
+
+	triggerDB, err = initTriggerStore(sessionPath)
+	if err != nil {
+		log.Fatalf("erro ao abrir banco de gatilhos: %v", err)
+	}
 
 	dbLog := waLog.Stdout("DB", "ERROR", true)
 	dsn := fmt.Sprintf("file:%s/datastore.db?_foreign_keys=on", sessionPath)
@@ -1056,6 +1099,41 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 
 	// ==== comandos GLOBAIS (qualquer chat) ====
 	if isFromMe(senderJID, infoIsFromMe) {
+		if trimmedBody == "!salvar" || strings.HasPrefix(trimmedBody, "!salvar ") {
+			log.Println("✅ Disparou !salvar")
+			triggerInput := strings.TrimSpace(trimmedBody[len("!salvar"):])
+			if triggerInput == "" {
+				sendText(cli, chatBare, "❌ Uso: responda a uma mensagem com !salvar <gatilho>.")
+				return
+			}
+			triggerName, err := normalizeTriggerName(triggerInput)
+			if err != nil {
+				sendText(cli, chatBare, "❌ "+err.Error())
+				return
+			}
+			if _, reserved := reservedTriggers[triggerName]; reserved {
+				sendText(cli, chatBare, "❌ Esse gatilho é reservado.")
+				return
+			}
+			ext := v.Message.GetExtendedTextMessage()
+			if ext == nil || ext.GetContextInfo() == nil || ext.GetContextInfo().GetQuotedMessage() == nil {
+				sendText(cli, chatBare, "❌ Responda a uma mensagem para usar !salvar.")
+				return
+			}
+			qm := ext.GetContextInfo().GetQuotedMessage()
+			trig, err := buildTriggerFromQuoted(cli, qm)
+			if err != nil {
+				sendText(cli, chatBare, "❌ "+err.Error())
+				return
+			}
+			trig.Name = triggerName
+			if err := saveTrigger(triggerDB, trig); err != nil {
+				sendText(cli, chatBare, "❌ Falha ao salvar gatilho: "+err.Error())
+				return
+			}
+			sendText(cli, chatBare, fmt.Sprintf("✅ Gatilho !%s salvo.", triggerName))
+			return
+		}
 		if trimmedBody == "!carteirinha" {
 			log.Println("✅ Disparou !carteirinha")
 			if err := sendImageFromFile(cli, chatBare, "carteirinha.jpg"); err != nil {
@@ -1630,6 +1708,24 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			return
 		}
+		if strings.HasPrefix(trimmedBody, "!") && strings.IndexAny(trimmedBody, " \t\n") == -1 {
+			triggerName, err := normalizeTriggerName(trimmedBody)
+			if err == nil {
+				if _, reserved := reservedTriggers[triggerName]; !reserved {
+					trig, found, err := loadTrigger(triggerDB, triggerName)
+					if err != nil {
+						sendText(cli, chatBare, "❌ Falha ao carregar gatilho: "+err.Error())
+						return
+					}
+					if found {
+						if err := sendSavedTrigger(cli, chatBare, trig); err != nil {
+							sendText(cli, chatBare, "❌ Falha ao enviar gatilho: "+err.Error())
+						}
+						return
+					}
+				}
+			}
+		}
 	}
 
 	// ==== comando !resumo (antes de gravar) ====
@@ -1715,6 +1811,22 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					sendText(cli, chatBare, sb.String())
 				}
 			}
+			return
+		}
+		if body == "!triggers" {
+			triggers, err := listTriggers(triggerDB)
+			if err != nil {
+				sendText(cli, chatBare, "❌ Falha ao listar gatilhos: "+err.Error())
+				return
+			}
+			if len(triggers) == 0 {
+				sendText(cli, chatBare, "Nenhum gatilho salvo.")
+				return
+			}
+			for i, name := range triggers {
+				triggers[i] = "!" + name
+			}
+			sendText(cli, chatBare, "Gatilhos salvos: "+strings.Join(triggers, ", "))
 			return
 		}
 		if strings.HasPrefix(body, "!grupos") {
@@ -1809,6 +1921,344 @@ func normalizeTarget(target string) (string, error) {
 		return trimmed, nil
 	}
 	return trimmed + "@s.whatsapp.net", nil
+}
+
+func normalizeTriggerName(input string) (string, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", fmt.Errorf("gatilho vazio")
+	}
+	if strings.HasPrefix(trimmed, "!") {
+		trimmed = strings.TrimSpace(trimmed[1:])
+	}
+	if trimmed == "" {
+		return "", fmt.Errorf("gatilho vazio")
+	}
+	if strings.ContainsAny(trimmed, " \t\n") {
+		return "", fmt.Errorf("gatilho precisa ser uma palavra")
+	}
+	return strings.ToLower(trimmed), nil
+}
+
+func initTriggerStore(sessionPath string) (*sql.DB, error) {
+	dbPath := fmt.Sprintf("file:%s/triggers.db?_foreign_keys=on", sessionPath)
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("abrindo banco de gatilhos: %w", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS saved_triggers (
+			name TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			mime_type TEXT,
+			file_name TEXT,
+			data BLOB,
+			text TEXT,
+			caption TEXT,
+			is_ptt INTEGER NOT NULL DEFAULT 0
+		)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("criando tabela de gatilhos: %w", err)
+	}
+	return db, nil
+}
+
+func saveTrigger(db *sql.DB, trig savedTrigger) error {
+	_, err := db.Exec(`
+		INSERT INTO saved_triggers (name, kind, mime_type, file_name, data, text, caption, is_ptt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			kind=excluded.kind,
+			mime_type=excluded.mime_type,
+			file_name=excluded.file_name,
+			data=excluded.data,
+			text=excluded.text,
+			caption=excluded.caption,
+			is_ptt=excluded.is_ptt
+	`, trig.Name, trig.Kind, trig.MimeType, trig.FileName, trig.Data, trig.Text, trig.Caption, boolToInt(trig.IsPTT))
+	if err != nil {
+		return fmt.Errorf("salvando gatilho: %w", err)
+	}
+	return nil
+}
+
+func loadTrigger(db *sql.DB, name string) (savedTrigger, bool, error) {
+	row := db.QueryRow(`
+		SELECT name, kind, mime_type, file_name, data, text, caption, is_ptt
+		FROM saved_triggers
+		WHERE name = ?
+	`, name)
+	var trig savedTrigger
+	var isPTT int
+	if err := row.Scan(&trig.Name, &trig.Kind, &trig.MimeType, &trig.FileName, &trig.Data, &trig.Text, &trig.Caption, &isPTT); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return savedTrigger{}, false, nil
+		}
+		return savedTrigger{}, false, fmt.Errorf("carregando gatilho: %w", err)
+	}
+	trig.IsPTT = isPTT == 1
+	return trig, true, nil
+}
+
+func listTriggers(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT name FROM saved_triggers ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("listando gatilhos: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("lendo gatilho: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterando gatilhos: %w", err)
+	}
+	return names, nil
+}
+
+func boolToInt(val bool) int {
+	if val {
+		return 1
+	}
+	return 0
+}
+
+func buildTriggerFromQuoted(cli *whatsmeow.Client, qm *waProto.Message) (savedTrigger, error) {
+	if qm == nil {
+		return savedTrigger{}, fmt.Errorf("mensagem citada vazia")
+	}
+	if text := strings.TrimSpace(qm.GetConversation()); text != "" {
+		return savedTrigger{Kind: "text", Text: text}, nil
+	}
+	if ext := qm.GetExtendedTextMessage(); ext != nil && strings.TrimSpace(ext.GetText()) != "" {
+		return savedTrigger{Kind: "text", Text: strings.TrimSpace(ext.GetText())}, nil
+	}
+	if img := qm.GetImageMessage(); img != nil {
+		data, err := cli.Download(context.Background(), img)
+		if err != nil {
+			return savedTrigger{}, fmt.Errorf("falha ao baixar imagem: %w", err)
+		}
+		mimeType := img.GetMimetype()
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		return savedTrigger{
+			Kind:     "image",
+			MimeType: mimeType,
+			Data:     data,
+			Caption:  strings.TrimSpace(img.GetCaption()),
+		}, nil
+	}
+	if vid := qm.GetVideoMessage(); vid != nil {
+		data, err := cli.Download(context.Background(), vid)
+		if err != nil {
+			return savedTrigger{}, fmt.Errorf("falha ao baixar vídeo: %w", err)
+		}
+		mimeType := vid.GetMimetype()
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		return savedTrigger{
+			Kind:     "video",
+			MimeType: mimeType,
+			Data:     data,
+			Caption:  strings.TrimSpace(vid.GetCaption()),
+		}, nil
+	}
+	if aud := qm.GetAudioMessage(); aud != nil {
+		data, err := cli.Download(context.Background(), aud)
+		if err != nil {
+			return savedTrigger{}, fmt.Errorf("falha ao baixar áudio: %w", err)
+		}
+		mimeType := aud.GetMimetype()
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		return savedTrigger{
+			Kind:     "audio",
+			MimeType: mimeType,
+			Data:     data,
+			IsPTT:    aud.GetPtt(),
+		}, nil
+	}
+	if doc := qm.GetDocumentMessage(); doc != nil {
+		data, err := cli.Download(context.Background(), doc)
+		if err != nil {
+			return savedTrigger{}, fmt.Errorf("falha ao baixar documento: %w", err)
+		}
+		mimeType := doc.GetMimetype()
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		fileName := strings.TrimSpace(doc.GetFileName())
+		return savedTrigger{
+			Kind:     "document",
+			MimeType: mimeType,
+			FileName: fileName,
+			Data:     data,
+		}, nil
+	}
+	if sticker := qm.GetStickerMessage(); sticker != nil {
+		data, err := cli.Download(context.Background(), sticker)
+		if err != nil {
+			return savedTrigger{}, fmt.Errorf("falha ao baixar figurinha: %w", err)
+		}
+		mimeType := sticker.GetMimetype()
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		return savedTrigger{
+			Kind:     "sticker",
+			MimeType: mimeType,
+			Data:     data,
+		}, nil
+	}
+	return savedTrigger{}, fmt.Errorf("tipo de mensagem não suportado")
+}
+
+func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) error {
+	jid, err := types.ParseJID(chat)
+	if err != nil {
+		return fmt.Errorf("JID inválido %q: %w", chat, err)
+	}
+	switch trig.Kind {
+	case "text":
+		if strings.TrimSpace(trig.Text) == "" {
+			return fmt.Errorf("gatilho sem texto")
+		}
+		return sendTextWithError(cli, chat, trig.Text)
+	case "image":
+		mimeType := trig.MimeType
+		if mimeType == "" {
+			mimeType = http.DetectContentType(trig.Data)
+		}
+		up, err := cli.Upload(context.Background(), trig.Data, whatsmeow.MediaImage)
+		if err != nil {
+			return fmt.Errorf("upload da imagem falhou: %w", err)
+		}
+		imgMsg := &waProto.ImageMessage{
+			Mimetype:      proto.String(mimeType),
+			URL:           proto.String(up.URL),
+			DirectPath:    proto.String(up.DirectPath),
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    proto.Uint64(up.FileLength),
+		}
+		if trig.Caption != "" {
+			imgMsg.Caption = proto.String(trig.Caption)
+		}
+		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imgMsg}); err != nil {
+			return fmt.Errorf("falha ao enviar imagem: %w", err)
+		}
+		return nil
+	case "video":
+		mimeType := trig.MimeType
+		if mimeType == "" {
+			mimeType = http.DetectContentType(trig.Data)
+		}
+		up, err := cli.Upload(context.Background(), trig.Data, whatsmeow.MediaVideo)
+		if err != nil {
+			return fmt.Errorf("upload do vídeo falhou: %w", err)
+		}
+		vidMsg := &waProto.VideoMessage{
+			Mimetype:      proto.String(mimeType),
+			URL:           proto.String(up.URL),
+			DirectPath:    proto.String(up.DirectPath),
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    proto.Uint64(up.FileLength),
+		}
+		if trig.Caption != "" {
+			vidMsg.Caption = proto.String(trig.Caption)
+		}
+		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{VideoMessage: vidMsg}); err != nil {
+			return fmt.Errorf("falha ao enviar vídeo: %w", err)
+		}
+		return nil
+	case "audio":
+		mimeType := trig.MimeType
+		if mimeType == "" {
+			mimeType = http.DetectContentType(trig.Data)
+		}
+		up, err := cli.Upload(context.Background(), trig.Data, whatsmeow.MediaAudio)
+		if err != nil {
+			return fmt.Errorf("upload do áudio falhou: %w", err)
+		}
+		audMsg := &waProto.AudioMessage{
+			Mimetype:      proto.String(mimeType),
+			URL:           proto.String(up.URL),
+			DirectPath:    proto.String(up.DirectPath),
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    proto.Uint64(up.FileLength),
+		}
+		if trig.IsPTT {
+			audMsg.Ptt = proto.Bool(true)
+		}
+		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{AudioMessage: audMsg}); err != nil {
+			return fmt.Errorf("falha ao enviar áudio: %w", err)
+		}
+		return nil
+	case "document":
+		mimeType := trig.MimeType
+		if mimeType == "" {
+			mimeType = http.DetectContentType(trig.Data)
+		}
+		fileName := strings.TrimSpace(trig.FileName)
+		if fileName == "" {
+			fileName = "documento"
+		}
+		up, err := cli.Upload(context.Background(), trig.Data, whatsmeow.MediaDocument)
+		if err != nil {
+			return fmt.Errorf("upload do documento falhou: %w", err)
+		}
+		docMsg := &waProto.DocumentMessage{
+			Mimetype:      proto.String(mimeType),
+			URL:           proto.String(up.URL),
+			DirectPath:    proto.String(up.DirectPath),
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    proto.Uint64(up.FileLength),
+			FileName:      proto.String(fileName),
+		}
+		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{DocumentMessage: docMsg}); err != nil {
+			return fmt.Errorf("falha ao enviar documento: %w", err)
+		}
+		return nil
+	case "sticker":
+		mimeType := trig.MimeType
+		if mimeType == "" {
+			mimeType = "image/webp"
+		}
+		up, err := cli.Upload(context.Background(), trig.Data, whatsmeow.MediaImage)
+		if err != nil {
+			return fmt.Errorf("upload da figurinha falhou: %w", err)
+		}
+		stickerMsg := &waProto.StickerMessage{
+			Mimetype:      proto.String(mimeType),
+			URL:           proto.String(up.URL),
+			DirectPath:    proto.String(up.DirectPath),
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    proto.Uint64(up.FileLength),
+		}
+		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{StickerMessage: stickerMsg}); err != nil {
+			return fmt.Errorf("falha ao enviar figurinha: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("tipo de gatilho desconhecido: %s", trig.Kind)
+	}
 }
 
 func startAPIServer(cli *whatsmeow.Client) *http.Server {

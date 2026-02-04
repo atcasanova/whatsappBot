@@ -95,6 +95,8 @@ docker-compose up --build -d
 | `!edit <prompt>`            | Qualquer conversa              | (Responder a uma imagem)                 | Edita a imagem citada via gpt-image-1.5 e envia o resultado         |
 | `!img <prompt>`             | Qualquer conversa              | `!img gato astronauta, estilo cartoon`   | Gera e envia uma imagem via gpt-image-1.5 diretamente no chat       |
 | `!sticker`                  | Qualquer conversa              | (Responder a uma imagem ou vídeo curto)  | Converte a mídia citada em figurinha (imagem estática ou animada)   |
+| `!salvar <gatilho>`         | Qualquer conversa              | (Responder a uma mensagem)               | Salva a mensagem/arquivo citado para ser reenviado com `!<gatilho>` |
+| `!triggers`                 | Sua conversa consigo mesmo     | `!triggers`                              | Lista todos os gatilhos salvos                                      |
 | `!download`                 | Sua conversa consigo mesmo     | (Responder a um link)                    | Baixa mídias suportadas pelo `yt-dlp` e envia no chat               |
 | `!paywall`                  | Sua conversa consigo mesmo     | (Responder a um link)                    | Gera link alternativo usando `PAYWALL_REMOVER`                      |
 | `!ler`                      | Qualquer conversa              | `!ler`                                   | Transcreve o último áudio citado usando Whisper                     |

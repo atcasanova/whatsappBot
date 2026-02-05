@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"log"
@@ -645,6 +647,109 @@ func extractVideoURL(text string) string {
 	return match
 }
 
+func isMostlyBlankPixel(c color.Color) bool {
+	const (
+		blankAlphaThreshold = 10
+		blankRGBThreshold   = 245
+	)
+	rgba := color.RGBAModel.Convert(c).(color.RGBA)
+	if rgba.A <= blankAlphaThreshold {
+		return true
+	}
+	return rgba.R >= blankRGBThreshold && rgba.G >= blankRGBThreshold && rgba.B >= blankRGBThreshold
+}
+
+func trimWhitespaceBounds(img image.Image) (image.Rectangle, bool) {
+	bounds := img.Bounds()
+	top := bounds.Max.Y
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		rowHasContent := false
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if !isMostlyBlankPixel(img.At(x, y)) {
+				rowHasContent = true
+				break
+			}
+		}
+		if rowHasContent {
+			top = y
+			break
+		}
+	}
+	if top == bounds.Max.Y {
+		return bounds, false
+	}
+
+	bottom := bounds.Min.Y
+	for y := bounds.Max.Y - 1; y >= bounds.Min.Y; y-- {
+		rowHasContent := false
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if !isMostlyBlankPixel(img.At(x, y)) {
+				rowHasContent = true
+				break
+			}
+		}
+		if rowHasContent {
+			bottom = y + 1
+			break
+		}
+	}
+
+	left := bounds.Max.X
+	for x := bounds.Min.X; x < bounds.Max.X; x++ {
+		colHasContent := false
+		for y := top; y < bottom; y++ {
+			if !isMostlyBlankPixel(img.At(x, y)) {
+				colHasContent = true
+				break
+			}
+		}
+		if colHasContent {
+			left = x
+			break
+		}
+	}
+
+	right := bounds.Min.X
+	for x := bounds.Max.X - 1; x >= bounds.Min.X; x-- {
+		colHasContent := false
+		for y := top; y < bottom; y++ {
+			if !isMostlyBlankPixel(img.At(x, y)) {
+				colHasContent = true
+				break
+			}
+		}
+		if colHasContent {
+			right = x + 1
+			break
+		}
+	}
+
+	if left >= right || top >= bottom {
+		return bounds, false
+	}
+
+	trimmed := image.Rect(left, top, right, bottom)
+	if trimmed.Eq(bounds) {
+		return bounds, false
+	}
+	return trimmed, true
+}
+
+func trimWhitespace(img image.Image) (image.Image, bool) {
+	trimmedBounds, ok := trimWhitespaceBounds(img)
+	if !ok {
+		return img, false
+	}
+	if sub, ok := img.(interface {
+		SubImage(r image.Rectangle) image.Image
+	}); ok {
+		return sub.SubImage(trimmedBounds), true
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, trimmedBounds.Dx(), trimmedBounds.Dy()))
+	draw.Draw(dst, dst.Bounds(), img, trimmedBounds.Min, draw.Src)
+	return dst, true
+}
+
 func buildApiflashURL(targetURL string) (string, error) {
 	key := strings.TrimSpace(os.Getenv("APIFLASH_KEY"))
 	if key == "" {
@@ -679,7 +784,7 @@ func fetchApiflashScreenshot(ctx context.Context, targetURL string) ([]byte, str
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, "", fmt.Errorf("erro da API (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
-	bytes, err := io.ReadAll(resp.Body)
+	imageBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, "", fmt.Errorf("falha ao ler imagem: %w", err)
 	}
@@ -687,7 +792,34 @@ func fetchApiflashScreenshot(ctx context.Context, targetURL string) ([]byte, str
 	if mimeType == "" {
 		mimeType = "image/jpeg"
 	}
-	return bytes, mimeType, nil
+	img, format, err := image.Decode(bytes.NewReader(imageBytes))
+	if err != nil {
+		return imageBytes, mimeType, nil
+	}
+	trimmed, trimmedOk := trimWhitespace(img)
+	if !trimmedOk {
+		return imageBytes, mimeType, nil
+	}
+	var buf bytes.Buffer
+	outputMime := mimeType
+	switch {
+	case strings.Contains(mimeType, "png") || format == "png":
+		if err := png.Encode(&buf, trimmed); err != nil {
+			return imageBytes, mimeType, nil
+		}
+		outputMime = "image/png"
+	case strings.Contains(mimeType, "jpeg") || strings.Contains(mimeType, "jpg") || format == "jpeg":
+		if err := jpeg.Encode(&buf, trimmed, &jpeg.Options{Quality: 95}); err != nil {
+			return imageBytes, mimeType, nil
+		}
+		outputMime = "image/jpeg"
+	default:
+		if err := png.Encode(&buf, trimmed); err != nil {
+			return imageBytes, mimeType, nil
+		}
+		outputMime = "image/png"
+	}
+	return buf.Bytes(), outputMime, nil
 }
 
 func cookieArgsForURL(url string) []string {

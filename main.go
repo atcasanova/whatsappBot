@@ -2108,7 +2108,7 @@ func buildTriggerFromQuoted(cli *whatsmeow.Client, qm *waProto.Message) (savedTr
 			Kind:     "audio",
 			MimeType: mimeType,
 			Data:     data,
-			IsPTT:    aud.GetPtt(),
+			IsPTT:    aud.GetPTT(),
 		}, nil
 	}
 	if doc := qm.GetDocumentMessage(); doc != nil {
@@ -2239,7 +2239,7 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger, rep
 			FileLength:    proto.Uint64(up.FileLength),
 		}
 		if trig.IsPTT {
-			audMsg.Ptt = proto.Bool(true)
+			audMsg.PTT = proto.Bool(true)
 		}
 		if replyContext != nil {
 			audMsg.ContextInfo = replyContext

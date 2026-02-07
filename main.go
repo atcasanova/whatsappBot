@@ -2156,9 +2156,16 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger, rep
 		if strings.TrimSpace(trig.Text) == "" {
 			return fmt.Errorf("gatilho sem texto")
 		}
-		msg := &waProto.Message{Conversation: proto.String(trig.Text)}
+		var msg *waProto.Message
 		if replyContext != nil {
-			msg.ContextInfo = replyContext
+			msg = &waProto.Message{
+				ExtendedTextMessage: &waProto.ExtendedTextMessage{
+					Text:        proto.String(trig.Text),
+					ContextInfo: replyContext,
+				},
+			}
+		} else {
+			msg = &waProto.Message{Conversation: proto.String(trig.Text)}
 		}
 		if _, err := cli.SendMessage(context.Background(), jid, msg); err != nil {
 			return fmt.Errorf("falha ao enviar mensagem: %w", err)

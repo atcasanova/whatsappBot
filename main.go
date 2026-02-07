@@ -53,7 +53,8 @@ import (
 const (
 	summaryMarker       = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
 	maxStickerSizeBytes = 900 * 1024 // keep stickers safely under WhatsApp's 1MB limit
-	maxThumbnailSize    = 512
+	maxThumbnailSize    = 256
+	maxThumbnailBytes   = 64 * 1024
 )
 
 // Msg representa uma mensagem armazenada, possivelmente com quote
@@ -226,9 +227,20 @@ func createJPEGThumbnail(imageBytes []byte, maxSize int) ([]byte, uint32, uint32
 	}
 	thumb := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
 	draw.ApproxBiLinear.Scale(thumb, thumb.Bounds(), decoded, bounds, draw.Over, nil)
+	quality := 80
 	var buffer bytes.Buffer
-	if err := jpeg.Encode(&buffer, thumb, &jpeg.Options{Quality: 80}); err != nil {
-		return nil, 0, 0, fmt.Errorf("codificando thumbnail: %w", err)
+	for {
+		buffer.Reset()
+		if err := jpeg.Encode(&buffer, thumb, &jpeg.Options{Quality: quality}); err != nil {
+			return nil, 0, 0, fmt.Errorf("codificando thumbnail: %w", err)
+		}
+		if buffer.Len() <= maxThumbnailBytes || quality <= 40 {
+			break
+		}
+		quality -= 10
+	}
+	if buffer.Len() > maxThumbnailBytes {
+		return nil, 0, 0, fmt.Errorf("thumbnail acima do limite de %d bytes", maxThumbnailBytes)
 	}
 	return buffer.Bytes(), uint32(targetWidth), uint32(targetHeight), nil
 }
@@ -1242,7 +1254,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					sendText(cli, chatBare, "❌ Falha ao baixar a imagem: "+err.Error())
 					return
 				}
-				thumbBytes, _, _, err := createJPEGThumbnail(thumbData, maxThumbnailSize)
+				thumbBytes, thumbWidth, thumbHeight, err := createJPEGThumbnail(thumbData, maxThumbnailSize)
 				if err != nil {
 					sendText(cli, chatBare, "❌ Falha ao gerar thumbnail: "+err.Error())
 					return
@@ -1277,6 +1289,12 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					FileLength:    proto.Uint64(up.FileLength),
 					JPEGThumbnail: thumbBytes,
 					ContextInfo:   ctx,
+				}
+				if thumbWidth > 0 {
+					vidMsg.ThumbnailWidth = proto.Uint32(thumbWidth)
+				}
+				if thumbHeight > 0 {
+					vidMsg.ThumbnailHeight = proto.Uint32(thumbHeight)
 				}
 				if captionText := strings.TrimSpace(strings.TrimPrefix(caption, "!thumb")); captionText != "" {
 					vidMsg.Caption = proto.String(captionText)

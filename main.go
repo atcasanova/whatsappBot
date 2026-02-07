@@ -1122,11 +1122,30 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	if isFromMe(senderJID, infoIsFromMe) && !v.IsEdit {
 		if sanitized, changed := sanitizeOutgoingLinks(body); changed {
 			replyContext := extractReplyContext(v.Message)
-			if err := sendTextWithReply(cli, chatBare, sanitized, replyContext); err != nil {
-				log.Printf("⚠️ falha ao reenviar link sanitizado: %v", err)
-			} else {
-				revokeTriggerMessage(cli, v.Info.Chat, v.Info.ID)
-				log.Printf("✅ reenviou link sanitizado e removeu mensagem original")
+			var preview *linkPreviewData
+			contextInfo := replyContext
+			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+				preview = extractLinkPreviewData(ext)
+				if ext.GetContextInfo() != nil {
+					contextInfo = ext.GetContextInfo()
+				}
+			}
+			edited := false
+			if canEditMessage(v.Info.Timestamp) {
+				if err := editMessageWithPreview(cli, v.Info.Chat, v.Info.ID, sanitized, contextInfo, preview); err != nil {
+					log.Printf("⚠️ falha ao editar link sanitizado: %v", err)
+				} else {
+					edited = true
+					log.Printf("✅ editou link sanitizado")
+				}
+			}
+			if !edited {
+				if err := sendTextWithReplyWithPreview(cli, chatBare, sanitized, contextInfo, preview); err != nil {
+					log.Printf("⚠️ falha ao reenviar link sanitizado: %v", err)
+				} else {
+					revokeTriggerMessage(cli, v.Info.Chat, v.Info.ID)
+					log.Printf("✅ reenviou link sanitizado e removeu mensagem original")
+				}
 			}
 			body = sanitized
 			trimmedBody = strings.TrimSpace(body)
@@ -1995,6 +2014,128 @@ func sendText(cli *whatsmeow.Client, to, text string) {
 
 func sendTextWithError(cli *whatsmeow.Client, to, text string) error {
 	return sendTextWithReply(cli, to, text, nil)
+}
+
+type linkPreviewData struct {
+	Title               string
+	Description         string
+	JPEGThumbnail       []byte
+	ThumbnailDirectPath string
+	ThumbnailSHA256     []byte
+	ThumbnailEncSHA256  []byte
+	MediaKey            []byte
+	ThumbnailHeight     uint32
+	ThumbnailWidth      uint32
+	PreviewType         waProto.ExtendedTextMessage_PreviewType
+	LinkPreviewMetadata *waProto.LinkPreviewMetadata
+}
+
+func extractLinkPreviewData(ext *waProto.ExtendedTextMessage) *linkPreviewData {
+	if ext == nil {
+		return nil
+	}
+	hasThumbnail := len(ext.GetJPEGThumbnail()) > 0 || ext.GetThumbnailDirectPath() != "" || len(ext.GetThumbnailSHA256()) > 0 || len(ext.GetThumbnailEncSHA256()) > 0 || len(ext.GetMediaKey()) > 0
+	hasMetadata := ext.GetTitle() != "" || ext.GetDescription() != "" || ext.GetPreviewType() != waProto.ExtendedTextMessage_NONE
+	if !hasThumbnail && !hasMetadata && ext.GetLinkPreviewMetadata() == nil {
+		return nil
+	}
+	return &linkPreviewData{
+		Title:               ext.GetTitle(),
+		Description:         ext.GetDescription(),
+		JPEGThumbnail:       ext.GetJPEGThumbnail(),
+		ThumbnailDirectPath: ext.GetThumbnailDirectPath(),
+		ThumbnailSHA256:     ext.GetThumbnailSHA256(),
+		ThumbnailEncSHA256:  ext.GetThumbnailEncSHA256(),
+		MediaKey:            ext.GetMediaKey(),
+		ThumbnailHeight:     ext.GetThumbnailHeight(),
+		ThumbnailWidth:      ext.GetThumbnailWidth(),
+		PreviewType:         ext.GetPreviewType(),
+		LinkPreviewMetadata: ext.GetLinkPreviewMetadata(),
+	}
+}
+
+func firstURL(text string) string {
+	if text == "" {
+		return ""
+	}
+	return reVideoURL.FindString(text)
+}
+
+func buildExtendedTextMessage(text string, replyContext *waProto.ContextInfo, preview *linkPreviewData) *waProto.ExtendedTextMessage {
+	ext := &waProto.ExtendedTextMessage{
+		Text:        proto.String(text),
+		ContextInfo: replyContext,
+	}
+	if preview != nil {
+		if matched := firstURL(text); matched != "" {
+			ext.MatchedText = proto.String(matched)
+		}
+		if preview.Title != "" {
+			ext.Title = proto.String(preview.Title)
+		}
+		if preview.Description != "" {
+			ext.Description = proto.String(preview.Description)
+		}
+		if len(preview.JPEGThumbnail) > 0 {
+			ext.JPEGThumbnail = preview.JPEGThumbnail
+		}
+		if preview.ThumbnailDirectPath != "" {
+			ext.ThumbnailDirectPath = proto.String(preview.ThumbnailDirectPath)
+		}
+		if len(preview.ThumbnailSHA256) > 0 {
+			ext.ThumbnailSHA256 = preview.ThumbnailSHA256
+		}
+		if len(preview.ThumbnailEncSHA256) > 0 {
+			ext.ThumbnailEncSHA256 = preview.ThumbnailEncSHA256
+		}
+		if len(preview.MediaKey) > 0 {
+			ext.MediaKey = preview.MediaKey
+		}
+		if preview.ThumbnailHeight > 0 {
+			ext.ThumbnailHeight = proto.Uint32(preview.ThumbnailHeight)
+		}
+		if preview.ThumbnailWidth > 0 {
+			ext.ThumbnailWidth = proto.Uint32(preview.ThumbnailWidth)
+		}
+		if preview.PreviewType != waProto.ExtendedTextMessage_NONE {
+			ext.PreviewType = &preview.PreviewType
+		}
+		if preview.LinkPreviewMetadata != nil {
+			ext.LinkPreviewMetadata = preview.LinkPreviewMetadata
+		}
+	}
+	return ext
+}
+
+func sendTextWithReplyWithPreview(cli *whatsmeow.Client, to, text string, replyContext *waProto.ContextInfo, preview *linkPreviewData) error {
+	if preview == nil && replyContext == nil {
+		return sendTextWithReply(cli, to, text, replyContext)
+	}
+	jid, err := types.ParseJID(to)
+	if err != nil {
+		return fmt.Errorf("JID inválido %q: %w", to, err)
+	}
+	ext := buildExtendedTextMessage(text, replyContext, preview)
+	if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ExtendedTextMessage: ext}); err != nil {
+		return fmt.Errorf("falha ao enviar mensagem: %w", err)
+	}
+	return nil
+}
+
+func canEditMessage(ts time.Time) bool {
+	if ts.IsZero() {
+		return false
+	}
+	return time.Since(ts) <= whatsmeow.EditWindow
+}
+
+func editMessageWithPreview(cli *whatsmeow.Client, chat types.JID, id types.MessageID, text string, replyContext *waProto.ContextInfo, preview *linkPreviewData) error {
+	ext := buildExtendedTextMessage(text, replyContext, preview)
+	msg := &waProto.Message{ExtendedTextMessage: ext}
+	if _, err := cli.SendMessage(context.Background(), chat, cli.BuildEdit(chat, id, msg)); err != nil {
+		return fmt.Errorf("falha ao editar mensagem: %w", err)
+	}
+	return nil
 }
 
 func sendTextWithReply(cli *whatsmeow.Client, to, text string, replyContext *waProto.ContextInfo) error {

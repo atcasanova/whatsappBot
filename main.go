@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	_ "image/gif"
+	"image/jpeg"
 	_ "image/jpeg"
 	"image/png"
 	"io"
@@ -34,6 +35,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	go_openai "github.com/sashabaranov/go-openai"
 	_ "golang.org/x/image/bmp"
+	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 
 	"go.mau.fi/whatsmeow"
@@ -51,6 +53,8 @@ import (
 const (
 	summaryMarker       = "📋󠅢󠅕󠅣󠅥󠅝󠅟"
 	maxStickerSizeBytes = 900 * 1024 // keep stickers safely under WhatsApp's 1MB limit
+	maxThumbnailSize    = 256
+	maxThumbnailBytes   = 64 * 1024
 )
 
 // Msg representa uma mensagem armazenada, possivelmente com quote
@@ -112,6 +116,7 @@ var reservedTriggers = map[string]struct{}{
 	"model":       {},
 	"insta":       {},
 	"tiktok":      {},
+	"thumb":       {},
 }
 
 func init() {
@@ -188,6 +193,56 @@ func sendKeepAlive(ctx context.Context, cli *whatsmeow.Client) error {
 	}
 
 	return nil
+}
+
+func createJPEGThumbnail(imageBytes []byte, maxSize int) ([]byte, uint32, uint32, error) {
+	if maxSize <= 0 {
+		return nil, 0, 0, fmt.Errorf("tamanho máximo inválido")
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(imageBytes))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("decodificando imagem: %w", err)
+	}
+	bounds := decoded.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width == 0 || height == 0 {
+		return nil, 0, 0, fmt.Errorf("dimensões inválidas da imagem")
+	}
+	targetWidth := width
+	targetHeight := height
+	if width > maxSize || height > maxSize {
+		scale := float64(maxSize) / float64(width)
+		if height > width {
+			scale = float64(maxSize) / float64(height)
+		}
+		targetWidth = int(float64(width)*scale + 0.5)
+		targetHeight = int(float64(height)*scale + 0.5)
+		if targetWidth < 1 {
+			targetWidth = 1
+		}
+		if targetHeight < 1 {
+			targetHeight = 1
+		}
+	}
+	thumb := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
+	draw.ApproxBiLinear.Scale(thumb, thumb.Bounds(), decoded, bounds, draw.Over, nil)
+	quality := 80
+	var buffer bytes.Buffer
+	for {
+		buffer.Reset()
+		if err := jpeg.Encode(&buffer, thumb, &jpeg.Options{Quality: quality}); err != nil {
+			return nil, 0, 0, fmt.Errorf("codificando thumbnail: %w", err)
+		}
+		if buffer.Len() <= maxThumbnailBytes || quality <= 40 {
+			break
+		}
+		quality -= 10
+	}
+	if buffer.Len() > maxThumbnailBytes {
+		return nil, 0, 0, fmt.Errorf("thumbnail acima do limite de %d bytes", maxThumbnailBytes)
+	}
+	return buffer.Bytes(), uint32(targetWidth), uint32(targetHeight), nil
 }
 
 func createImageEdit(ctx context.Context, pngData []byte, prompt string) ([]byte, error) {
@@ -1185,6 +1240,71 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 
 	// ==== comandos GLOBAIS (qualquer chat) ====
 	if isFromMe(senderJID, infoIsFromMe) {
+		if img := v.Message.GetImageMessage(); img != nil {
+			caption := strings.TrimSpace(img.GetCaption())
+			if strings.HasPrefix(caption, "!thumb") {
+				log.Println("✅ Disparou !thumb")
+				ctx := img.GetContextInfo()
+				if ctx == nil || ctx.GetQuotedMessage() == nil || ctx.GetQuotedMessage().GetVideoMessage() == nil {
+					sendText(cli, chatBare, "❌ Responda a um vídeo com uma imagem e a legenda !thumb.")
+					return
+				}
+				thumbData, err := cli.Download(context.Background(), img)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Falha ao baixar a imagem: "+err.Error())
+					return
+				}
+				thumbBytes, thumbWidth, thumbHeight, err := createJPEGThumbnail(thumbData, maxThumbnailSize)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Falha ao gerar thumbnail: "+err.Error())
+					return
+				}
+				vid := ctx.GetQuotedMessage().GetVideoMessage()
+				videoData, err := cli.Download(context.Background(), vid)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Falha ao baixar o vídeo: "+err.Error())
+					return
+				}
+				mimeType := vid.GetMimetype()
+				if mimeType == "" {
+					mimeType = http.DetectContentType(videoData)
+				}
+				up, err := cli.Upload(context.Background(), videoData, whatsmeow.MediaVideo)
+				if err != nil {
+					sendText(cli, chatBare, "❌ Erro no upload do vídeo: "+err.Error())
+					return
+				}
+				jid, err := types.ParseJID(chatBare)
+				if err != nil {
+					log.Printf("⚠️ JID inválido: %v", err)
+					return
+				}
+				vidMsg := &waProto.VideoMessage{
+					Mimetype:      proto.String(mimeType),
+					URL:           proto.String(up.URL),
+					DirectPath:    proto.String(up.DirectPath),
+					MediaKey:      up.MediaKey,
+					FileEncSHA256: up.FileEncSHA256,
+					FileSHA256:    up.FileSHA256,
+					FileLength:    proto.Uint64(up.FileLength),
+					JPEGThumbnail: thumbBytes,
+					ContextInfo:   ctx,
+				}
+				if thumbWidth > 0 {
+					vidMsg.ThumbnailWidth = proto.Uint32(thumbWidth)
+				}
+				if thumbHeight > 0 {
+					vidMsg.ThumbnailHeight = proto.Uint32(thumbHeight)
+				}
+				if captionText := strings.TrimSpace(strings.TrimPrefix(caption, "!thumb")); captionText != "" {
+					vidMsg.Caption = proto.String(captionText)
+				}
+				if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{VideoMessage: vidMsg}); err != nil {
+					sendText(cli, chatBare, "❌ Falha ao enviar o vídeo: "+err.Error())
+				}
+				return
+			}
+		}
 		if trimmedBody == "!salvar" || strings.HasPrefix(trimmedBody, "!salvar ") {
 			log.Println("✅ Disparou !salvar")
 			triggerInput := strings.TrimSpace(trimmedBody[len("!salvar"):])

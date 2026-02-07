@@ -1718,8 +1718,12 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 						return
 					}
 					if found {
-						if err := sendSavedTrigger(cli, chatBare, trig); err != nil {
+						replyContext := extractReplyContext(v.Message)
+						if err := sendSavedTrigger(cli, chatBare, trig, replyContext); err != nil {
 							sendText(cli, chatBare, "❌ Falha ao enviar gatilho: "+err.Error())
+						}
+						if !isPrivateChat(chatBare) && triggerName != "chatgpt" {
+							revokeTriggerMessage(cli, v.Info.Chat, v.Info.ID)
 						}
 						return
 					}
@@ -1910,6 +1914,27 @@ func sendTextWithError(cli *whatsmeow.Client, to, text string) error {
 		return fmt.Errorf("falha ao enviar mensagem: %w", err)
 	}
 	return nil
+}
+
+func extractReplyContext(msg *waProto.Message) *waProto.ContextInfo {
+	if msg == nil {
+		return nil
+	}
+	ext := msg.GetExtendedTextMessage()
+	if ext == nil {
+		return nil
+	}
+	ctx := ext.GetContextInfo()
+	if ctx == nil || ctx.GetQuotedMessage() == nil {
+		return nil
+	}
+	return ctx
+}
+
+func revokeTriggerMessage(cli *whatsmeow.Client, chat types.JID, messageID types.MessageID) {
+	if _, err := cli.RevokeMessage(context.Background(), chat, messageID); err != nil {
+		log.Printf("⚠️ falha ao apagar gatilho: %v", err)
+	}
 }
 
 func normalizeTarget(target string) (string, error) {
@@ -2121,7 +2146,7 @@ func buildTriggerFromQuoted(cli *whatsmeow.Client, qm *waProto.Message) (savedTr
 	return savedTrigger{}, fmt.Errorf("tipo de mensagem não suportado")
 }
 
-func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) error {
+func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger, replyContext *waProto.ContextInfo) error {
 	jid, err := types.ParseJID(chat)
 	if err != nil {
 		return fmt.Errorf("JID inválido %q: %w", chat, err)
@@ -2131,7 +2156,14 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) err
 		if strings.TrimSpace(trig.Text) == "" {
 			return fmt.Errorf("gatilho sem texto")
 		}
-		return sendTextWithError(cli, chat, trig.Text)
+		msg := &waProto.Message{Conversation: proto.String(trig.Text)}
+		if replyContext != nil {
+			msg.ContextInfo = replyContext
+		}
+		if _, err := cli.SendMessage(context.Background(), jid, msg); err != nil {
+			return fmt.Errorf("falha ao enviar mensagem: %w", err)
+		}
+		return nil
 	case "image":
 		mimeType := trig.MimeType
 		if mimeType == "" {
@@ -2152,6 +2184,9 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) err
 		}
 		if trig.Caption != "" {
 			imgMsg.Caption = proto.String(trig.Caption)
+		}
+		if replyContext != nil {
+			imgMsg.ContextInfo = replyContext
 		}
 		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imgMsg}); err != nil {
 			return fmt.Errorf("falha ao enviar imagem: %w", err)
@@ -2178,6 +2213,9 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) err
 		if trig.Caption != "" {
 			vidMsg.Caption = proto.String(trig.Caption)
 		}
+		if replyContext != nil {
+			vidMsg.ContextInfo = replyContext
+		}
 		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{VideoMessage: vidMsg}); err != nil {
 			return fmt.Errorf("falha ao enviar vídeo: %w", err)
 		}
@@ -2202,6 +2240,9 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) err
 		}
 		if trig.IsPTT {
 			audMsg.Ptt = proto.Bool(true)
+		}
+		if replyContext != nil {
+			audMsg.ContextInfo = replyContext
 		}
 		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{AudioMessage: audMsg}); err != nil {
 			return fmt.Errorf("falha ao enviar áudio: %w", err)
@@ -2230,6 +2271,9 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) err
 			FileLength:    proto.Uint64(up.FileLength),
 			FileName:      proto.String(fileName),
 		}
+		if replyContext != nil {
+			docMsg.ContextInfo = replyContext
+		}
 		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{DocumentMessage: docMsg}); err != nil {
 			return fmt.Errorf("falha ao enviar documento: %w", err)
 		}
@@ -2251,6 +2295,9 @@ func sendSavedTrigger(cli *whatsmeow.Client, chat string, trig savedTrigger) err
 			FileEncSHA256: up.FileEncSHA256,
 			FileSHA256:    up.FileSHA256,
 			FileLength:    proto.Uint64(up.FileLength),
+		}
+		if replyContext != nil {
+			stickerMsg.ContextInfo = replyContext
 		}
 		if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{StickerMessage: stickerMsg}); err != nil {
 			return fmt.Errorf("falha ao enviar figurinha: %w", err)

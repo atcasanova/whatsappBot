@@ -1254,7 +1254,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					sendText(cli, chatBare, "❌ Falha ao baixar a imagem: "+err.Error())
 					return
 				}
-				thumbBytes, thumbWidth, thumbHeight, err := createJPEGThumbnail(thumbData, maxThumbnailSize)
+				thumbBytes, _, _, err := createJPEGThumbnail(thumbData, maxThumbnailSize)
 				if err != nil {
 					sendText(cli, chatBare, "❌ Falha ao gerar thumbnail: "+err.Error())
 					return
@@ -1289,12 +1289,6 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 					FileLength:    proto.Uint64(up.FileLength),
 					JPEGThumbnail: thumbBytes,
 					ContextInfo:   ctx,
-				}
-				if thumbWidth > 0 {
-					vidMsg.ThumbnailWidth = proto.Uint32(thumbWidth)
-				}
-				if thumbHeight > 0 {
-					vidMsg.ThumbnailHeight = proto.Uint32(thumbHeight)
 				}
 				if captionText := strings.TrimSpace(strings.TrimPrefix(caption, "!thumb")); captionText != "" {
 					vidMsg.Caption = proto.String(captionText)

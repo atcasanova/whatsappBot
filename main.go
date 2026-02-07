@@ -407,6 +407,54 @@ var (
 	rePixNumber = regexp.MustCompile(`\d[\d.,-]*\d`)
 )
 
+func sanitizeOutgoingLinks(body string) (string, bool) {
+	if body == "" {
+		return body, false
+	}
+	changed := false
+	updated := reVideoURL.ReplaceAllStringFunc(body, func(raw string) string {
+		cleaned, didClean := stripTrackingParams(raw)
+		if didClean {
+			changed = true
+			return cleaned
+		}
+		return raw
+	})
+	return updated, changed
+}
+
+func stripTrackingParams(raw string) (string, bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return raw, false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	isInstagram := strings.HasSuffix(host, "instagram.com")
+	isYouTube := host == "youtu.be" || strings.HasSuffix(host, "youtube.com")
+	if !isInstagram && !isYouTube {
+		return raw, false
+	}
+	query := parsed.Query()
+	changed := false
+	if isInstagram {
+		if _, ok := query["igsh"]; ok {
+			query.Del("igsh")
+			changed = true
+		}
+	}
+	if isYouTube {
+		if _, ok := query["si"]; ok {
+			query.Del("si")
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), true
+}
+
 func fileSize(path string) (int64, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -725,7 +773,7 @@ func runYtDlp(args []string) error {
 	return nil
 }
 
-func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
+func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string, replyContext *waProto.ContextInfo) {
 	tmpDir, err := os.MkdirTemp("", "vid-*")
 	if err != nil {
 		log.Printf("erro temp dir: %v", err)
@@ -830,6 +878,9 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 				FileSHA256:    up.FileSHA256,
 				FileLength:    proto.Uint64(up.FileLength),
 			}
+			if replyContext != nil {
+				vidMsg.ContextInfo = replyContext
+			}
 			if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{VideoMessage: vidMsg}); err != nil {
 				log.Printf("erro enviando video: %v", err)
 			} else {
@@ -849,6 +900,9 @@ func downloadAndSendMedia(cli *whatsmeow.Client, chat string, url string) {
 				FileEncSHA256: up.FileEncSHA256,
 				FileSHA256:    up.FileSHA256,
 				FileLength:    proto.Uint64(up.FileLength),
+			}
+			if replyContext != nil {
+				imgMsg.ContextInfo = replyContext
 			}
 			if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imgMsg}); err != nil {
 				log.Printf("erro enviando imagem: %v", err)
@@ -1065,6 +1119,19 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 	log.Printf("📥 DEBUG sender=%s chat=%s body=%q", senderBare, chatBare, body)
 
 	trimmedBody := strings.TrimSpace(body)
+	if isFromMe(senderJID, infoIsFromMe) && !v.IsEdit {
+		if sanitized, changed := sanitizeOutgoingLinks(body); changed {
+			replyContext := extractReplyContext(v.Message)
+			if err := sendTextWithReply(cli, chatBare, sanitized, replyContext); err != nil {
+				log.Printf("⚠️ falha ao reenviar link sanitizado: %v", err)
+			} else {
+				revokeTriggerMessage(cli, v.Info.Chat, v.Info.ID)
+				log.Printf("✅ reenviou link sanitizado e removeu mensagem original")
+			}
+			body = sanitized
+			trimmedBody = strings.TrimSpace(body)
+		}
+	}
 	if strings.HasPrefix(trimmedBody, "!") {
 		commandName := trimmedBody
 		if idx := strings.IndexAny(trimmedBody, " \t\n"); idx != -1 {
@@ -1528,6 +1595,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 		if body == "!download" {
 			log.Println("✅ Disparou !download")
 			var quotedText string
+			replyContext := extractReplyContext(v.Message)
 			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
 				if ctx := ext.GetContextInfo(); ctx != nil {
 					if qm := ctx.GetQuotedMessage(); qm != nil {
@@ -1544,15 +1612,19 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			url := extractVideoURL(quotedText)
 			if url != "" {
-				go downloadAndSendMedia(cli, chatBare, url)
+				go downloadAndSendMedia(cli, chatBare, url, replyContext)
+				revokeTriggerMessage(cli, v.Info.Chat, v.Info.ID)
 			} else {
-				sendText(cli, chatBare, "❌ Link inválido para download.")
+				if err := sendTextWithReply(cli, chatBare, "❌ Link inválido para download.", replyContext); err != nil {
+					log.Printf("❌ falha ao enviar erro do !download: %v", err)
+				}
 			}
 			return
 		}
 		if body == "!print" {
 			log.Println("✅ Disparou !print")
 			var quotedText string
+			replyContext := extractReplyContext(v.Message)
 			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
 				if ctx := ext.GetContextInfo(); ctx != nil {
 					if qm := ctx.GetQuotedMessage(); qm != nil {
@@ -1569,19 +1641,25 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			}
 			targetURL := extractVideoURL(quotedText)
 			if targetURL == "" {
-				sendText(cli, chatBare, "❌ Link inválido para !print.")
+				if err := sendTextWithReply(cli, chatBare, "❌ Link inválido para !print.", replyContext); err != nil {
+					log.Printf("❌ falha ao enviar erro do !print: %v", err)
+				}
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			imgBytes, mimeType, err := fetchApiflashScreenshot(ctx, targetURL)
 			if err != nil {
-				sendText(cli, chatBare, "❌ Erro ao gerar captura: "+err.Error())
+				if err := sendTextWithReply(cli, chatBare, "❌ Erro ao gerar captura: "+err.Error(), replyContext); err != nil {
+					log.Printf("❌ falha ao enviar erro do !print: %v", err)
+				}
 				return
 			}
 			up, err := cli.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
 			if err != nil {
-				sendText(cli, chatBare, "❌ Erro no upload da captura: "+err.Error())
+				if err := sendTextWithReply(cli, chatBare, "❌ Erro no upload da captura: "+err.Error(), replyContext); err != nil {
+					log.Printf("❌ falha ao enviar erro do !print: %v", err)
+				}
 				return
 			}
 			jid, err := types.ParseJID(chatBare)
@@ -1598,8 +1676,13 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 				FileSHA256:    up.FileSHA256,
 				FileLength:    proto.Uint64(up.FileLength),
 			}
+			if replyContext != nil {
+				imageMsg.ContextInfo = replyContext
+			}
 			if _, err := cli.SendMessage(context.Background(), jid, &waProto.Message{ImageMessage: imageMsg}); err != nil {
 				log.Printf("❌ falha ao enviar captura: %v", err)
+			} else {
+				revokeTriggerMessage(cli, v.Info.Chat, v.Info.ID)
 			}
 			return
 		}
@@ -1640,6 +1723,7 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 			if ext := v.Message.GetExtendedTextMessage(); ext != nil {
 				if ctx := ext.GetContextInfo(); ctx != nil {
 					if qm := ctx.GetQuotedMessage(); qm != nil && qm.GetAudioMessage() != nil {
+						replyContext := ctx
 						aud := qm.GetAudioMessage()
 						exts, _ := mime.ExtensionsByType(aud.GetMimetype())
 						ext := ".ogg"
@@ -1653,10 +1737,15 @@ func handleMessage(cli *whatsmeow.Client, v *events.Message) {
 							go_openai.AudioRequest{Model: go_openai.Whisper1, FilePath: filePath},
 						)
 						if err != nil {
-							sendText(cli, chatBare, "❌ Erro na transcrição: "+err.Error())
+							if err := sendTextWithReply(cli, chatBare, "❌ Erro na transcrição: "+err.Error(), replyContext); err != nil {
+								log.Printf("❌ falha ao enviar erro do !ler: %v", err)
+							}
 						} else {
-							sendText(cli, chatBare, "🗣️ "+tr.Text)
+							if err := sendTextWithReply(cli, chatBare, "🗣️ "+tr.Text, replyContext); err != nil {
+								log.Printf("❌ falha ao enviar resposta do !ler: %v", err)
+							}
 						}
+						revokeTriggerMessage(cli, v.Info.Chat, v.Info.ID)
 					}
 				}
 			}
@@ -1905,11 +1994,25 @@ func sendText(cli *whatsmeow.Client, to, text string) {
 }
 
 func sendTextWithError(cli *whatsmeow.Client, to, text string) error {
+	return sendTextWithReply(cli, to, text, nil)
+}
+
+func sendTextWithReply(cli *whatsmeow.Client, to, text string, replyContext *waProto.ContextInfo) error {
 	jid, err := types.ParseJID(to)
 	if err != nil {
 		return fmt.Errorf("JID inválido %q: %w", to, err)
 	}
-	msg := &waProto.Message{Conversation: proto.String(text)}
+	var msg *waProto.Message
+	if replyContext != nil {
+		msg = &waProto.Message{
+			ExtendedTextMessage: &waProto.ExtendedTextMessage{
+				Text:        proto.String(text),
+				ContextInfo: replyContext,
+			},
+		}
+	} else {
+		msg = &waProto.Message{Conversation: proto.String(text)}
+	}
 	if _, err := cli.SendMessage(context.Background(), jid, msg); err != nil {
 		return fmt.Errorf("falha ao enviar mensagem: %w", err)
 	}
